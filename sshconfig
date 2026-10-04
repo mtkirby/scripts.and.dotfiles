@@ -1,0 +1,28 @@
+Host *
+    StrictHostKeyChecking no
+    Compression no
+    UserKnownHostsFile /dev/null
+    ServerAliveCountMax 30
+    ServerAliveInterval 2
+    TCPKeepAlive yes
+    #PKCS11Provider=/usr/lib/ssh-keychain.dylib
+    #PKCS11Provider=/usr/lib64/pkcs11/opensc-pkcs11.so
+    ForwardAgent yes
+    #HostKeyAlgorithms +ssh-dss,ssh-rsa
+    #PubkeyAcceptedKeyTypes +ssh-dss,ssh-rsa
+    #KexAlgorithms +diffie-hellman-group1-sha1
+    KexAlgorithms +curve25519-sha256
+
+Host samplehost
+    HostName testmachine
+    ControlPath ~/.ssh/masters-%r_%h
+    ControlMaster auto
+    User root
+    LocalForward 127.0.0.1:5982 127.0.0.1:5901
+    RemoteForward 127.0.0.1:9050 127.0.0.1:9050
+    DynamicForward 9050
+
+    # bounce through 9050 proxy:
+    ProxyCommand=nc -X 5 -x 127.0.0.1:9050 %h %p
+
+
