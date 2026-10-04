@@ -1,0 +1,23 @@
+\set QUIET 1
+\echo 'Connected to: :DBNAME at :HOSTNAME as :USER'
+\set AUTOCOMMIT 'off'
+\set HISTFILE ~/.psql_history- :DBNAME
+-- \set PROMPT1 '%[%033[1m%][%/] # '
+-- \set PROMPT2 '... > '
+-- \set PROMPT1 '%M:%> %n@%/%R%#%x '
+-- \set PROMPT2 '%M %n@%/%R %# '
+\set PROMPT1 '%[%033[1;36m%]%M:%> %n@%/ [%033[1;31m%R%#%x%033[0m] '
+\set PROMPT2 '%[%033[1;33m%]%M %n@%/ %R %# %[%033[0m%]'
+\timing
+\set ECHO all
+\set HISTCONTROL ignoredups
+\x auto
+\pset format aligned
+-- \pset null '¤'
+\pset null '[NULL]'
+\set HISTSIZE 10000
+\set VERBOSITY verbose
+\set ON_ERROR_STOP on
+\set ON_ERROR_ROLLBACK interactive
+\unset QUIET
+
