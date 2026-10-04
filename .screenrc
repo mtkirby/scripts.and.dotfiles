@@ -1,0 +1,32 @@
+# Ensure the status line is actually enabled
+hardstatus on
+hardstatus alwayslastline
+
+# Cleaned up string for Screen 5 (5.x uses fg;bg numeric/hex colors, not the old kw-style letters)
+#hardstatus string '%{= g}[ %{G}%H %{g}][%= %{= w}%?%-Lw%?%{r}(%{W}%n*%f%t%?%u%?%{r})%{w}%?%+Lw%?%?%= %{g}][ %d/%m %c %{g}| %{r}Load:%{W} %l ]'
+hardstatus string "%{= 15;0}%-Lw%{= .;1}(%{15}%n*%f%t%?(%u)%?%{1})%{= 15;0}%+Lw %="
+
+
+
+# Caption (Title Bar)
+#caption always "%{= g}[%{G}%H %{g}] %C%A %D %d-%m-%Y %{= b} %t%= %{g}%n "
+caption always "%{= 15;0} %H %{= 0;3} %l %{= 15;0}%= %{= 15;5} %D %d %M %{= 15;1} %c %A "
+
+# Performance & Scrolling
+defscrollback 50000
+startup_message off
+msgwait 1
+
+# Keybinds (Screen 5 prefers quoted strings for bindkey)
+bindkey "^[b" prev
+bindkey "^[f" next
+bind ^K kill
+
+# Ctrl + Alt + Left Arrow to go to the previous window
+bindkey "^[[1;5D" prev
+
+# Ctrl + Alt + Right Arrow to go to the next window
+bindkey "^[[1;5C" next
+
+autodetach on
+
