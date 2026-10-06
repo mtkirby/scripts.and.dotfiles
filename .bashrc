@@ -36,7 +36,7 @@ for i in \
     $HOME/bin \
     $HOME/scripts
 do
-    [[ -d "$i" ]] && export PATH="${PATH}:${i}"
+    [[ -d "$i" ]] && export PATH="${PATH:+${PATH}:}${i}"
 done
 
 IFS=: read -ra dirs <<< "$oldPATH"
@@ -78,9 +78,9 @@ export LD_LIBRARY_PATH=$newldpath
 ##################################################
 export USER=${USER:-$LOGNAME}
 
-if which bat >/dev/null 2>&1
+if command -v bat >/dev/null 2>&1
 then
-    if which less >/dev/null 2>&1
+    if command -v less >/dev/null 2>&1
     then
         export BAT_PAGER="less -RFX"
     fi
@@ -161,9 +161,9 @@ alias s='sudo'
 alias si='sudo -i'
 alias tidyperl='perltidy -ce -l=240 '
 alias zrm='scrub -S -pfillzero -f '
-which vim >/dev/null 2>&1 && alias vi=vim
+command -v vim >/dev/null 2>&1 && alias vi=vim
 
-which rdap >/dev/null 2>&1 && alias whois='rdap'
+command -v rdap >/dev/null 2>&1 && alias whois='rdap'
 
 
 
@@ -256,6 +256,8 @@ mkpromptcmd() {
     else
         TAB_TITLE=$(echo -ne "\033]0;$USER@$HOSTNAME\007")
     fi
+    # minix console doesn't understand the title escape and prints it as text
+    [[ "$TERM" == "minix" ]] && TAB_TITLE=''
 
 # disabled because of bash: child setpgid (22926 to 22926): Operation not permitted
 #    if [[ "$AWS_PROFILE" != "$myoldawsprofile" ]] \
@@ -301,11 +303,8 @@ mkpromptcmd() {
         mycol=${COLUMNS:-55}
         #mycol=$((mycol - 5))
         oldcols=$COLUMNS
-        PSBANNER=''
-        for i in $(seq 1 $mycol)
-        do
-            PSBANNER="${PSBANNER}-"
-        done
+        printf -v PSBANNER '%*s' "$mycol" ''
+        PSBANNER="${PSBANNER// /-}"
     fi
 }
 
@@ -321,7 +320,7 @@ fi
 
 
 if [[ -e ~/.gitconfig ]] \
-&& which git >/dev/null 2>&1
+&& command -v git >/dev/null 2>&1
 then
     ihavegit="YES"
 else
@@ -410,7 +409,7 @@ CURL_ERR_MAP=(
     [56]=":Connection Reset"
 )
 
-case "$(uname -s)" in
+case "$(uname -s 2>/dev/null)" in
     Linux)
         ERR_MAP[135]=":SIGBUS Bus Error"
         ERR_MAP[110]=":ETIMEDOUT Connection Timed Out"
@@ -441,6 +440,9 @@ case "$(uname -s)" in
         ERR_MAP[150]=":SIGTRAP Trace/Breakpoint Trap"
         ERR_MAP[158]=":SIGBUS Bus Error"
         ;;
+    Minix)
+        ERR_MAP[$(( 128 + $(kill -l BUS) ))]=":SIGBUS Bus Error"
+        ;;
 esac
 
 true
@@ -459,7 +461,9 @@ export PS1="\${TAB_TITLE}${rstcolor}${pscolor}\${PSBANNER}${rstcolor}\n  ${hcolo
 if [[ -f ~/.ssh/.agent ]]
 then
     . ~/.ssh/.agent >/dev/null 2>&1
-    if ! ps -p ${SSH_AGENT_PID:-1} 2>&1 |grep -q ssh-agent
+    # ssh-add exits 2 only when it can't reach the agent (avoids ps -p, which minix lacks)
+    ssh-add -l >/dev/null 2>&1
+    if [[ $? -eq 2 ]]
     then
         rm -f ~/.ssh/.agent >/dev/null 2>&1
         ssh-agent -s > ~/.ssh/.agent 2>/dev/null
@@ -475,9 +479,16 @@ fi
 export myCFLAGS="-O2 -pipe -Wall -Wextra -Wformat=2 -Wtrampolines -Wbidi-chars=any -Wimplicit-fallthrough -Werror=format-security -Wconversion -Wshadow -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -ftrivial-auto-var-init=zero -fstrict-flex-arrays=3 -fzero-call-used-regs=used-gpr -fno-delete-null-pointer-checks -fno-strict-overflow -fno-strict-aliasing -fPIE -fno-plt"
 export myLDFLAGS="-pie -Wl,-z,now -Wl,-z,relro -Wl,-z,noexecstack -Wl,-z,separate-code -Wl,-z,defs -Wl,--as-needed -Wl,-z,nodlopen"
 
-if [[ "$(uname -s)" == "Darwin" ]]
+if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]
 then
     export myCFLAGS="${myCFLAGS/ -fcf-protection=full/}"
+    export myLDFLAGS=""
+fi
+
+# minix 3.3: clang 3.4, no PIE
+if [[ "$(uname -s 2>/dev/null)" == "Minix" ]]
+then
+    export myCFLAGS="-O2 -pipe -Wall -Wextra -Wformat=2 -Werror=format-security -Wconversion -Wshadow -fstack-protector -fno-strict-aliasing -fwrapv"
     export myLDFLAGS=""
 fi
 
@@ -487,7 +498,7 @@ mkdir -p ~/.terraform.d/plugin-cache
 # terraform
 ##################################################
 export TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
-if ! grep -Eq "^plugin_cache_dir" ~/.terraformrc
+if ! grep -Eq "^plugin_cache_dir" ~/.terraformrc >/dev/null 2>&1
 then
     echo "plugin_cache_dir = \"$TF_PLUGIN_CACHE_DIR\"" >> ~/.terraformrc
 fi
@@ -594,7 +605,8 @@ function sshagent()
     if [[ -f ~/.ssh/.agent ]]
     then
         . ~/.ssh/.agent
-        if ps -p $SSH_AGENT_PID |grep -q ssh-agent
+        ssh-add -l >/dev/null 2>&1
+        if [[ $? -ne 2 ]]
         then
             echo "ssh-agent already running.  importing environment..."
         else
@@ -639,7 +651,7 @@ function mysleep
 {
     local c=1
     local i=0
-    for i in $(seq $1 -1 1)
+    for (( i=$1; i>=1; i-- ))
     do
         printf "\e[K#sleeping %s/%s T-%s\r" "$c" "$1" "$i"
         sleep 1
@@ -702,7 +714,7 @@ function patchpip()
 ##################################################
 function patchcpan()
 {
-    if ! which cpan >/dev/null 2>&1
+    if ! command -v cpan >/dev/null 2>&1
     then
         echo "FAIL: cpan not found"
         return 1
@@ -720,7 +732,7 @@ function patchcpan()
 ##################################################
 function patchnpm()
 {
-    if ! which npm >/dev/null 2>&1
+    if ! command -v npm >/dev/null 2>&1
     then
         echo "FAIL: npm not found"
         return 1
@@ -751,17 +763,19 @@ alias patchfreebsd='sudo pkg update; echo y|sudo pkg upgrade'
 alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
 alias patchpkgin='sudo pkgin update; echo y|sudo pkgin upgrade'
 alias patchopenindiana='sudo pkg update'
+alias patchhaiku='pkgman refresh; pkgman update -y; pkgman full-sync'
+alias patchminix='pkgin update; pkgin -y full-upgrade'
 
 ##################################################
 function patchdnf()
 {
-    if uname -r |grep -qi amzn
+    if uname -r 2>/dev/null |grep -qi amzn
     then
         dnf --refresh update -y --releasever=latest
     else
         dnf --refresh update -y
     fi
-    which rpmconf >/dev/null 2>&1 || dnf install -y rpmconf
+    command -v rpmconf >/dev/null 2>&1 || dnf install -y rpmconf
     rpmconf -a
     dnf needs-restarting
 }
@@ -778,7 +792,7 @@ function patchcygwin()
 ##################################################
 function patchmac()
 {
-    if which mas >/dev/null 2>&1
+    if command -v mas >/dev/null 2>&1
     then
       mas outdated
       mas upgrade
@@ -859,8 +873,8 @@ function highlight()
     bg-yellow) code="43;30;1" ;;
     *)       code="$color" ;; # Fallback: allows raw ANSI like "0;35" or "48;5;208"
   esac
-  if uname -s|grep -qEi 'Darwin|BSD' \
-  && which ggrep >/dev/null 2>&1
+  if uname -s 2>/dev/null|grep -qEi 'Darwin|BSD' \
+  && command -v ggrep >/dev/null 2>&1
   then
      grepcmd='ggrep'
   else
@@ -1045,7 +1059,7 @@ function mkbanner()
 }
 
 ##################################################
-if uname -o|grep -q Cygwin
+if uname -o 2>/dev/null |grep -q Cygwin 
 then
     alias pbcopy='cat > /dev/clipboard'
     alias pbpaste='cat /dev/clipboard'
@@ -1079,13 +1093,13 @@ then
 fi
 
 ##################################################
-if uname -s|grep -q BSD
+if uname -s 2>/dev/null|grep -q BSD
 then
     alias free="top -d1 |grep -E '^Mem:'"
 fi
 
 ##################################################
-if uname -os|grep -qiE 'sunos|illumos'
+if uname -os 2>/dev/null|grep -qiE 'sunos|illumos'
 then
     unalias cp
     unalias rm
@@ -1094,7 +1108,7 @@ then
 fi
 
 ##################################################
-if uname -s|grep -q Darwin
+if uname -s 2>/dev/null|grep -q Darwin
 then
 
     alias micreset='tccutil reset Microphone'
@@ -1108,7 +1122,7 @@ then
         export PATH="${PATH}:${i}"
     done
     IFS=$' \t\n'
-	which MacVim >/dev/null 2>&1 && alias gvim=MacVim
+	command -v MacVim >/dev/null 2>&1 && alias gvim=MacVim
 
 ##
     function free()
