@@ -1,3 +1,6 @@
+" 20261006 Kirby
+"
+"
 " --- VISUALS & WHITESPACE ---
 "set list                    " Show hidden characters 
 " Set visible characters for tabs, EOL, etc 
@@ -126,4 +129,34 @@ set softtabstop=4           " Tab key size
 " Force expandtab even if a filetype plugin tries to disable it
 autocmd FileType * setlocal expandtab
 set expandtab               " Use spaces instead of tabs 
+
+" F2 - toggle paste mode
+nnoremap <F2> :set paste!<CR>
+
+" F3 - toggle line numbers
+nnoremap <F3> :set number!<CR>
+
+" F4 - toggle relative line numbers
+nnoremap <F4> :set relativenumber!<CR>
+
+" F5 - reload current file
+nnoremap <F5> :edit!<CR>
+
+" F6 - toggle search highlighting
+nnoremap <F6> :set hlsearch!<CR>
+
+" F7 - toggle spellcheck
+nnoremap <F7> :set spell!<CR>
+
+" F8 - toggle list/invisible characters
+nnoremap <F8> :set list!<CR>
+
+" F9 - toggle wrap
+nnoremap <F9> :set wrap!<CR>
+
+" F10 - toggle cursor line
+nnoremap <F10> :set cursorline!<CR>
+
+" Clear current search highlighting
+nnoremap <F11> :nohlsearch<CR>
 

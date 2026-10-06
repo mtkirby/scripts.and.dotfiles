@@ -1,0 +1,968 @@
+function tfpullaws()
+{
+    local service="${1:-all}"
+    local accountname="${2:-}"
+    local aws_provider_version="${TFPULLAWS_AWS_PROVIDER_VERSION:-6.67.0}"
+
+    local base_dir
+    local work_dir
+    local query_file
+    local generated_dir
+    local schema_file
+    local provider_key
+    local resources
+    local res
+    local output_file
+    local rc
+
+    local success=0
+    local failed=0
+    local skipped=0
+
+    #
+    # Requirements
+    #
+    for cmd in terraform aws jq; do
+        if ! command -v "${cmd}" >/dev/null 2>&1; then
+            echo "FAIL: ${cmd} not found"
+            return 1
+        fi
+    done
+
+    #
+    # Region
+    #
+    if [[ -z "${AWS_REGION}" ]]; then
+        if [[ -n "${AWS_PROFILE}" ]]; then
+            AWS_REGION="$(
+                aws configure get region \
+                    --profile "${AWS_PROFILE}" 2>/dev/null
+            )"
+        else
+            AWS_REGION="$(
+                aws configure get region 2>/dev/null
+            )"
+        fi
+    fi
+
+    if [[ -z "${AWS_REGION}" ]]; then
+        echo "FAIL: AWS_REGION is not set"
+        return 1
+    fi
+
+    #
+    # Account
+    #
+    if [[ -z "${accountname}" ]]; then
+        accountname="$(
+            aws sts get-caller-identity \
+                --query Account \
+                --output text 2>/dev/null
+        )"
+    fi
+
+    if [[ -z "${accountname}" ]]; then
+        echo "FAIL: unable to determine AWS account"
+        return 1
+    fi
+
+    #
+    # Output layout
+    #
+    base_dir="${accountname}/${AWS_REGION}"
+    work_dir="${base_dir}/${service}"
+    generated_dir="${work_dir}/generated"
+    query_file="${work_dir}/resources.tfquery.hcl"
+
+    mkdir -p "${generated_dir}"
+
+    #
+    # Provider configuration.
+    #
+    # LocalStack works nicely with AWS_ENDPOINT_URL exported in
+    # the environment, so we intentionally don't hard-code endpoints.
+    #
+    cat > "${work_dir}/provider.tf" <<EOF
+terraform {
+  required_version = ">= 1.14.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "${aws_provider_version}"
+    }
+  }
+}
+
+provider "aws" {
+  region = "${AWS_REGION}"
+}
+EOF
+
+    echo "AWS account      : ${accountname}"
+    echo "AWS profile      : ${AWS_PROFILE}"
+    echo "AWS region       : ${AWS_REGION}"
+    echo "AWS provider     : ${aws_provider_version}"
+    echo "Service          : ${service}"
+    echo "Directory        : ${work_dir}"
+    echo
+
+    #
+    # Initialize once.
+    #
+    (
+        cd "${work_dir}" || exit 1
+        terraform init -input=false
+    ) || return 1
+
+    #
+    # Get the actual schemas exposed by the installed AWS provider.
+    #
+    schema_file="$(
+        mktemp "${TMPDIR:-/tmp}/tfpullaws-schema.XXXXXX"
+    )" || return 1
+
+    (
+        cd "${work_dir}" || exit 1
+        terraform providers schema -json
+    ) > "${schema_file}"
+
+    if [[ $? -ne 0 ]]; then
+        echo "FAIL: unable to read Terraform provider schema"
+        rm -f "${schema_file}"
+        return 1
+    fi
+
+    provider_key="$(
+        jq -r '
+            .provider_schemas
+            | keys[]
+            | select(endswith("/hashicorp/aws") or endswith("/aws"))
+        ' "${schema_file}" | head -1
+    )"
+
+    if [[ -z "${provider_key}" ]]; then
+        echo "FAIL: AWS provider schema not found"
+        rm -f "${schema_file}"
+        return 1
+    fi
+
+    #
+    # Determine which List Resources to query.
+    #
+    # "all" intentionally means ALL supported AWS List Resources,
+    # not merely the old Terraformer catalog. This gives us Terraformer
+    # coverage plus newer AWS resources when HashiCorp supports them.
+    #
+    case "${service}" in
+
+        all)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        bedrock)
+            #
+            # Bedrock + Bedrock Agents, but not AgentCore.
+            #
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(
+                        startswith("aws_bedrock")
+                        and
+                        (startswith("aws_bedrockagentcore_") | not)
+                    )
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        agentcore|bedrockagentcore)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(
+                        startswith("aws_bedrockagentcore_")
+                    )
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        ec2|ec2_instance)
+            resources="$(
+                printf '%s\n' \
+                    aws_instance \
+                    aws_launch_template
+            )"
+            ;;
+
+        vpc)
+            resources="$(
+                printf '%s\n' \
+                    aws_vpc \
+                    aws_subnet \
+                    aws_route_table \
+                    aws_security_group \
+                    aws_network_acl \
+                    aws_internet_gateway \
+                    aws_nat_gateway \
+                    aws_vpc_endpoint \
+                    aws_vpc_peering_connection \
+                    aws_customer_gateway \
+                    aws_vpn_gateway \
+                    aws_vpn_connection \
+                    aws_network_interface \
+                    aws_eip
+            )"
+            ;;
+
+        iam)
+            resources="$(
+                printf '%s\n' \
+                    aws_iam_access_key \
+                    aws_iam_group \
+                    aws_iam_group_policy \
+                    aws_iam_group_policy_attachment \
+                    aws_iam_instance_profile \
+                    aws_iam_policy \
+                    aws_iam_role \
+                    aws_iam_role_policy \
+                    aws_iam_role_policy_attachment \
+                    aws_iam_user \
+                    aws_iam_user_group_membership \
+                    aws_iam_user_policy \
+                    aws_iam_user_policy_attachment
+            )"
+            ;;
+
+        s3)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_s3_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        rds)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(
+                        startswith("aws_db_")
+                        or startswith("aws_rds_")
+                    )
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        lambda)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_lambda_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        dynamodb)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_dynamodb_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        ecr)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_ecr_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        ecs)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_ecs_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        eks)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_eks_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        sns)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_sns_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        sqs)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_sqs_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        ssm)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_ssm_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        cloudwatch)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(
+                        startswith("aws_cloudwatch_")
+                    )
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        logs|cloudwatch_logs)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(
+                        startswith("aws_cloudwatch_log_")
+                    )
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        route53)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_route53_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        cloudfront)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_cloudfront_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        acm)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_acm_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        alb|elb)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(
+                        startswith("aws_lb")
+                        or . == "aws_elb"
+                    )
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        api_gateway|apigateway)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_api_gateway_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        appsync)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_appsync_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        auto_scaling|autoscaling)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(
+                        startswith("aws_autoscaling_")
+                        or . == "aws_launch_configuration"
+                        or . == "aws_launch_template"
+                    )
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        cloudformation)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_cloudformation_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        codebuild)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_codebuild_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        codepipeline)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_codepipeline"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        cognito)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_cognito_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        config)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_config_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        docdb)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_docdb_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        efs)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_efs_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        elasticache)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_elasticache_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        glue)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_glue_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        kms)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_kms_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        organizations|organization)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_organizations_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        redshift)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_redshift_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        secretsmanager)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_secretsmanager_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        securityhub)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_securityhub_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        ses)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_ses_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        sfn|stepfunctions)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_sfn_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        waf|wafv2)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(
+                        startswith("aws_waf")
+                    )
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        workspaces)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_workspaces_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        xray)
+            resources="$(
+                jq -r \
+                    --arg provider "${provider_key}" '
+                    .provider_schemas[$provider]
+                    .list_resource_schemas
+                    | keys[]
+                    | select(startswith("aws_xray_"))
+                ' "${schema_file}" |
+                sort
+            )"
+            ;;
+
+        list)
+            echo
+            echo "List Resources available in hashicorp/aws ${aws_provider_version}:"
+            echo
+
+            jq -r \
+                --arg provider "${provider_key}" '
+                .provider_schemas[$provider]
+                .list_resource_schemas
+                | keys[]
+            ' "${schema_file}" |
+            sort
+
+            rm -f "${schema_file}"
+            return 0
+            ;;
+
+        *)
+            #
+            # Allow a raw Terraform resource type.
+            #
+            # Example:
+            #
+            #   tfpullaws aws_vpc
+            #
+            if [[ "${service}" == aws_* ]]; then
+                resources="${service}"
+            else
+                echo "FAIL: unknown service: ${service}"
+                echo
+                echo "Try:"
+                echo "  tfpullaws all"
+                echo "  tfpullaws bedrock"
+                echo "  tfpullaws agentcore"
+                echo "  tfpullaws vpc"
+                echo "  tfpullaws iam"
+                echo "  tfpullaws s3"
+                echo "  tfpullaws list"
+                echo "  tfpullaws aws_vpc"
+
+                rm -f "${schema_file}"
+                return 1
+            fi
+            ;;
+    esac
+
+    if [[ -z "${resources}" ]]; then
+        echo "No List Resources found for service: ${service}"
+        rm -f "${schema_file}"
+        return 0
+    fi
+
+    echo
+    echo "Discoverable resource types:"
+    echo
+
+    printf '%s\n' "${resources}" | sed 's/^/  /'
+
+    echo
+    echo "Querying resources..."
+    echo
+
+    #
+    # Query one resource type at a time.
+    #
+    # This is intentional. If S3 or some LocalStack implementation
+    # fails, EC2/IAM/etc. still get pulled.
+    #
+    for res in ${resources}; do
+
+        #
+        # Verify this is actually a List Resource in the installed
+        # provider.
+        #
+        if ! jq -e \
+            --arg provider "${provider_key}" \
+            --arg resource "${res}" '
+                .provider_schemas[$provider]
+                .list_resource_schemas
+                | has($resource)
+            ' "${schema_file}" >/dev/null
+        then
+            printf "%-60s %s\n" "${res}" "SKIP (not listable)"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        #
+        # Some List Resources require input such as a parent ID.
+        #
+        # Example:
+        #
+        #   aws_route may require a route_table_id.
+        #
+        # Those cannot be blindly queried like Terraformer.
+        #
+        if jq -e \
+            --arg provider "${provider_key}" \
+            --arg resource "${res}" '
+                .provider_schemas[$provider]
+                .list_resource_schemas[$resource]
+                .block as $b
+
+                |
+
+                (
+                    [
+                        ($b.attributes // {})
+                        | to_entries[]
+                        | select(.value.required == true)
+                    ]
+                    | length
+                ) > 0
+
+                or
+
+                (
+                    [
+                        ($b.block_types // {})
+                        | to_entries[]
+                        | select(
+                            (.value.min_items // 0) > 0
+                        )
+                    ]
+                    | length
+                ) > 0
+            ' "${schema_file}" >/dev/null
+        then
+            printf "%-60s %s\n" "${res}" "SKIP (requires query arguments)"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        #
+        # Terraform query reads every *.tfquery.hcl in the directory,
+        # so use one fixed file and overwrite it for each resource.
+        #
+        cat > "${query_file}" <<EOF
+list "${res}" "all" {
+  provider = aws
+}
+EOF
+
+        output_file="${generated_dir}/${res}.tf"
+
+        #
+        # -generate-config-out refuses to overwrite.
+        #
+        rm -f "${output_file}"
+
+        printf "%-60s " "${res}"
+
+        (
+            cd "${work_dir}" || exit 1
+
+            terraform query \
+                -no-color \
+                -generate-config-out="generated/${res}.tf"
+        ) > "${work_dir}/${res}.query.log" 2>&1
+
+        rc=$?
+
+        if [[ ${rc} -eq 0 ]]; then
+
+            if [[ -s "${output_file}" ]]; then
+                echo "OK"
+                success=$((success + 1))
+            else
+                echo "EMPTY"
+                rm -f "${output_file}"
+                success=$((success + 1))
+            fi
+
+        else
+            echo "FAILED"
+            failed=$((failed + 1))
+
+            #
+            # Don't leave a partial generated file behind.
+            #
+            rm -f "${output_file}"
+        fi
+    done
+
+    rm -f "${query_file}"
+    rm -f "${schema_file}"
+
+    echo
+    echo "Summary"
+    echo "-------"
+    echo "Successful : ${success}"
+    echo "Skipped    : ${skipped}"
+    echo "Failed     : ${failed}"
+    echo
+    echo "Generated Terraform:"
+    echo "  ${generated_dir}"
+    echo
+    echo "Query logs:"
+    echo "  ${work_dir}/*.query.log"
+
+    if [[ ${failed} -gt 0 ]]; then
+        echo
+        echo "Some resources failed. This is expected when an AWS"
+        echo "List Resource is unsupported or incomplete in LocalStack."
+    fi
+}

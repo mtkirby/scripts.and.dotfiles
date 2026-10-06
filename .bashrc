@@ -1,4 +1,4 @@
-# 20261004 Kirby
+# 20261006 Kirby
 
 
 ##################################################
@@ -6,7 +6,8 @@
 ##################################################
 export HOME=${HOME:-~}
 export oldPATH=$PATH
-export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/usr/libexec:/usr/local/bin:/usr/local/sbin:$HOME/.local/bin
+unset PATH
+#export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/usr/libexec:/usr/local/bin:/usr/local/sbin:$HOME/.local/bin:$HOME/bin
 
 for i in \
     /opt/homebrew/bin \
@@ -23,46 +24,27 @@ for i in \
     /usr/pkg/libexec \
     /opt/pkg/bin \
     /opt/pkg/sbin \
-    /opt/pkg/libexec 
+    /opt/pkg/libexec \
+    /bin \
+    /usr/bin \
+    /sbin \
+    /usr/sbin \
+    /usr/libexec \
+    /usr/local/bin \
+    /usr/local/sbin \
+    $HOME/.local/bin \
+    $HOME/bin \
+    $HOME/scripts
 do
     [[ -d "$i" ]] && export PATH="${PATH}:${i}"
 done
 
-oldIFS=$IFS
-IFS=':'
-for i in $oldPATH
-do
-    if [[ "$i" != "/bin" ]] \
-    && [[ "$i" != "/usr/bin" ]] \
-    && [[ "$i" != "/sbin" ]] \
-    && [[ "$i" != "/usr/sbin" ]] \
-    && [[ "$i" != "/usr/libexec" ]] \
-    && [[ "$i" != "/usr/local/bin" ]] \
-    && [[ "$i" != "/usr/local/sbin" ]] \
-    && [[ "$i" != "$HOME/.local/bin" ]] \
-    && [[ "$i" != "/opt/homebrew/bin" ]] \
-    && [[ "$i" != "/opt/homebrew/sbin" ]] \
-    && [[ "$i" != "/opt/homebrew/libexec" ]] \
-    && [[ "$i" != "/home/linuxbrew/.linuxbrew/bin" ]] \
-    && [[ "$i" != "/home/linuxbrew/.linuxbrew/sbin" ]] \
-    && [[ "$i" != "/home/linuxbrew/.linuxbrew/libexec" ]] \
-    && [[ "$i" != "/opt/local/bin" ]] \
-    && [[ "$i" != "/opt/local/sbin" ]] \
-    && [[ "$i" != "/opt/local/libexec" ]] \
-    && [[ "$i" != "/opt/pkg/bin" ]] \
-    && [[ "$i" != "/opt/pkg/sbin" ]] \
-    && [[ "$i" != "/opt/pkg/libexec" ]] \
-    && [[ "$i" != "/usr/pkg/bin" ]] \
-    && [[ "$i" != "/usr/pkg/sbin" ]] \
-    && [[ "$i" != "/usr/pkg/libexec" ]]
-    then
-        if ! echo "${PATH}" |grep -qE "(^|:)$i(:|$)" 
-        then
-            export PATH="${PATH}:${i}"
-        fi
+IFS=: read -ra dirs <<< "$oldPATH"
+for i in "${dirs[@]}"; do
+    if [[ ":$PATH:" != *":$i:"* ]]; then
+        PATH="${PATH}:${i}"
     fi
 done
-IFS=$oldIFS
 
 ##################################################
 # SETUP LD_LIBRARY_PATH
@@ -120,7 +102,7 @@ export EDITOR=vi
 
 if [[ -d /opt/homebrew ]]
 then
-    eval "$(/opt/homebrew/bin/brew shellenv bash)"
+    eval "$(/opt/homebrew/bin/brew shellenv bash |grep -v 'export PATH=')"
 fi
 
 
@@ -245,6 +227,7 @@ esac
 mkpromptcmd() {
     local last_status=$?
     local last_cmd
+    local load
     last_cmd=$(history 1)
 
     history -a >/dev/null 2>&1
@@ -303,17 +286,17 @@ mkpromptcmd() {
 
     if [[ -e /proc/loadavg ]]
     then
-        local load=$(awk '{print $1}' /proc/loadavg)
+        load=$(awk '{print $1}' /proc/loadavg)
     elif sysctl vm.loadavg >/dev/null 2>&1
     then
-        local load=$(sysctl vm.loadavg |awk '{print $3}')
+        load=$(sysctl vm.loadavg |awk '{print $3}')
     else
-        local load=$(uptime |awk '{print $10}')
+        load=$(uptime |awk '{print $10}')
     fi
     #LOAD_INFO=$(echo -e "[L:$load] ")
     LOAD_INFO=$(echo -e "${load}${PSCPUCOUNT} ")
 
-    if [[ ${oldcols:-0} != ${COLUMNS} ]]
+    if [[ ${oldcols:-0} != "${COLUMNS}" ]]
     then
         mycol=${COLUMNS:-55}
         #mycol=$((mycol - 5))
@@ -498,6 +481,16 @@ then
     export myLDFLAGS=""
 fi
 
+mkdir -p ~/.terraform.d/plugin-cache
+
+##################################################
+# terraform
+##################################################
+export TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
+if ! grep -Eq "^plugin_cache_dir" ~/.terraformrc
+then
+    echo "plugin_cache_dir = \"$TF_PLUGIN_CACHE_DIR\"" >> ~/.terraformrc
+fi
 
 ##################################################
 # python
@@ -525,27 +518,24 @@ alias debugpy="python -m debugpy"
 function dogitps()
 {
     PSGITREPO=""
-    if [[ $ihavegit == "YES" ]]
-    then
-        local mypwd="$PWD"
-        while [[ "$mypwd" != '' ]]
-        do
-            if [[ -d "${mypwd}/.git" ]]
+    local mypwd="$PWD"
+    while [[ -n "$mypwd" ]]
+    do
+        if [[ -d "${mypwd}/.git" ]]
+        then
+            if mygitrepo=$(git config remote.origin.url 2>/dev/null)
             then
-                if mygitrepo=$(git config remote.origin.url 2>/dev/null)
-                then
-                    mygitbranch=$(git branch --show-current)
-                    mygitbranchcount=$(git branch |wc -l |awk '{print $1}')
-                    PSGITREPO=$(echo -e "\n\033[93;1;40m  ## GIT ${mygitbranch}/${mygitbranchcount} @ ${mygitrepo} ##\033[0m")
-                else
-                    PSGITREPO=""
-                fi
-                break
+                local mygitbranch=$(git branch --show-current)
+                local mygitbranchcount=$(git branch |wc -l |awk '{print $1}')
+                PSGITREPO=$(echo -e "\n\033[93;1;40m  ## GIT ${mygitbranch}/${mygitbranchcount} @ ${mygitrepo} ##\033[0m")
             else
-                mypwd="${mypwd%/*}"
+                PSGITREPO=""
             fi
-        done
-    fi
+            break
+        else
+            mypwd="${mypwd%/*}"
+        fi
+    done
 }
 ##################################################
 function cd()
@@ -593,7 +583,7 @@ function getaws()
 ##################################################
 function bail()
 {
-    tail $* |bat --paging=never -l log
+    tail "$@" |bat --paging=never -l log
 }
 
 ##################################################
@@ -757,9 +747,15 @@ function patchapt()
 }
 
 ##################################################
+alias patchfreebsd='sudo pkg update; echo y|sudo pkg upgrade'
+alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
+alias patchpkgin='sudo pkgin update; echo y|sudo pkgin upgrade'
+alias patchopenindiana='sudo pkg update'
+
+##################################################
 function patchdnf()
 {
-    if uname -r |grep -q amzn2023
+    if uname -r |grep -qi amzn
     then
         dnf --refresh update -y --releasever=latest
     else
@@ -780,6 +776,20 @@ function patchcygwin()
 }
 
 ##################################################
+function patchmac()
+{
+    if which mas >/dev/null 2>&1
+    then
+      mas outdated
+      mas upgrade
+    else
+      echo "SKIPPING mas.  Install mas with homebrew"
+    fi
+    softwareupdate --list
+    softwareupdate --install -all
+}
+
+##################################################
 function patchmacports()
 {
     xcode-select --install
@@ -787,21 +797,21 @@ function patchmacports()
         || /opt/local/bin/sudo xcodebuild -license accept \
         || sudo xcodebuild -license accept
     xcodebuild -runFirstLaunch -checkForNewerComponents
-    echo y|port selfupdate
-    echo y|port -cu upgrade outdated
-    echo y|port uninstall inactive
-    echo y|port reclaim
-    echo y|port clean --all -f all >/dev/null 2>&1 &
-    echo y|port list installed > ~/port-list-installed 2>/dev/null &
-    echo y|port diagnose
-    chmod -R 755 /opt/local/Library
-    chmod -R 755 /opt/local/bin
-    chmod -R 755 /opt/local/sbin
-    chmod -R 755 /opt/local/lib
-    chmod -R 755 /opt/local/libexec
-    chmod -R 755 /opt/local/share
-    chmod -R 755 /opt/local/include
-    chmod 4511 /opt/local/bin/sudo
+    echo y|sudo port selfupdate
+    echo y|sudo port -cu upgrade outdated
+    echo y|sudo port uninstall inactive
+    echo y|sudo port reclaim
+    echo y|sudo port clean --all -f all >/dev/null 2>&1 &
+    echo y|sudo port list installed > ~/port-list-installed 2>/dev/null &
+    echo y|sudo port diagnose
+    sudo chmod -R 755 /opt/local/Library
+    sudo chmod -R 755 /opt/local/bin
+    sudo chmod -R 755 /opt/local/sbin
+    sudo chmod -R 755 /opt/local/lib
+    sudo chmod -R 755 /opt/local/libexec
+    sudo chmod -R 755 /opt/local/share
+    sudo chmod -R 755 /opt/local/include
+    sudo chmod 4511 /opt/local/bin/sudo
 }
 ##################################################
 function patchhomebrew()
@@ -891,6 +901,101 @@ function urldecode()
 }
 
 ##################################################
+function tferaws()
+{
+    local accountname
+    local res
+
+    if [[ -n "$1" ]]
+   	then
+        accountname="$1"
+    else
+        echo "FAIL: must provide account name as arg 1"
+        return 1
+    fi
+
+    if [[ -z "$AWS_REGION" ]]
+   	then
+        echo "FAIL: AWS_REGION is not set"
+        return 1
+    fi
+
+    if [[ -z "$AWS_PROFILE" ]]
+   	then
+        echo "FAIL: AWS_PROFILE is not set"
+        return 1
+    fi
+
+    for res in $(terraformer import aws list)
+   	do
+      terraformer import aws \
+        --resources="${res}" \
+        --regions="${AWS_REGION}" \
+        --profile="${AWS_PROFILE}" \
+        --path-pattern="${accountname}/${AWS_REGION}/${res}"
+    done
+}
+
+##################################################
+function tferazure()
+{
+    local accountname
+    local subscription_id
+    local subscription_name
+    local res
+
+    if [[ -n "$1" ]]
+   	then
+      accountname="$1"
+    else
+      echo "FAIL: must provide account name as arg 1"
+      return 1
+    fi
+
+    subscription_id="$(az account show --query id -o tsv)"
+    subscription_name="$(az account show --query name -o tsv)"
+
+    if [[ -z "$subscription_id" ]]
+   	then
+      echo "FAIL: unable to determine active Azure subscription"
+      return 1
+    fi
+
+    export ARM_SUBSCRIPTION_ID="$subscription_id"
+
+    for res in $(terraformer import azure list)
+   	do
+      terraformer import azure \
+        --resources="${res}" \
+        --path-pattern="${accountname}/${subscription_name}/${res}"
+    done
+}
+##################################################
+function tferk8s()
+{
+    local context
+    local res
+
+    context="$(kubectl config current-context)"
+
+    if [[ -z "$context" ]]
+   	then
+      echo "FAIL: unable to determine current Kubernetes context"
+      return 1
+    fi
+
+    export KUBE_CONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}"
+    export KUBE_CTX="$context"
+
+    for res in $(terraformer import kubernetes list)
+   	do
+      terraformer import kubernetes \
+        --resources="${res}" \
+        --path-pattern="${context}/${res}"
+    done
+}
+
+##################################################
 function mycheckov() 
 {
     terraform init
@@ -939,6 +1044,39 @@ function mkbanner()
     echo ''
 }
 
+##################################################
+if uname -o|grep -q Cygwin
+then
+    alias pbcopy='cat > /dev/clipboard'
+    alias pbpaste='cat /dev/clipboard'
+    alias open='cygstart'
+
+    function cyginstall()
+    {
+      if ! cd /tmp/
+      then
+        echo "FAIL: no /tmp/"
+        return 1
+      fi
+      rm -f /tmp/setup-x86_64.exe >/dev/null 2>&1
+      wget --no-check-certificate https://cygwin.com/setup-x86_64.exe
+      chmod 700 /tmp/setup-x86_64.exe
+      /tmp/setup-x86_64.exe -q -P "$@"
+      cd -
+    }
+
+    function winps() {
+      tasklist.exe /FO TABLE
+    }
+    function smem() {
+      tasklist.exe /FO TABLE /NH | sort -k5 -n -r 
+    }
+
+    function free() {
+      powershell.exe -NoProfile -Command "Get-CimInstance Win32_OperatingSystem | Select-Object @{Name='TotalGB'; Expression={'{0:N2}' -f (\$_.TotalVisibleMemorySize / 1MB)}}, @{Name='FreeGB'; Expression={'{0:N2}' -f (\$_.FreePhysicalMemory / 1MB)}}"
+    }
+
+fi
 
 ##################################################
 if uname -s|grep -q BSD
@@ -960,13 +1098,16 @@ if uname -s|grep -q Darwin
 then
 
     alias micreset='tccutil reset Microphone'
+    alias code=Code
 
     [[ -e /opt/local/bin/sudo ]] && alias s='/opt/local/bin/sudo'
 
+    IFS=$'\n'
     for i in /Applications/*.app/Contents/MacOS
     do
         export PATH="${PATH}:${i}"
     done
+    IFS=$' \t\n'
 	which MacVim >/dev/null 2>&1 && alias gvim=MacVim
 
 ##
