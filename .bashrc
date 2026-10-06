@@ -127,9 +127,12 @@ alias mv="mv -v"
 alias rm="rm -v"
 alias ll='"ls" -Fl'
 alias l='"ls" -1AF'
-if /bin/ls -FAbd / >/dev/null 2>&1
+if /bin/ls -FAbd --color=never / >/dev/null 2>&1
 then
     alias ls='ls -FAb --color=never'
+elif /bin/ls -FAbd >/dev/null 2>&1
+then
+    alias ls='ls -FAb'
 else
     alias ls='ls -FA'
 fi
