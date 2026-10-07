@@ -815,6 +815,37 @@ function patchmsstore()
 }
 
 ##################################################
+function windiskclean()
+{
+    local vc='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
+    local ps="Get-ChildItem $vc"' | Where-Object PSChildName -ne DownloadsFolder | ForEach-Object { New-ItemProperty -Path $_.PSPath -Name StateFlags0001 -Value 2 -PropertyType DWord -Force | Out-Null }'
+    ps+="; New-ItemProperty -Path $vc\\DownloadsFolder -Name StateFlags0001 -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null"
+    ps+='; Start-Process cleanmgr.exe -ArgumentList /sagerun:1 -Wait'
+    powershell.exe -NoProfile -Command \
+        "Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile -Command $ps'" \
+        && echo "Disk Cleanup finished"
+}
+
+##################################################
+function windiskdefrag()
+{
+    if id -G | grep -qw 544
+    then
+      defrag.exe /C /O /U /V
+    else
+      powershell.exe -NoProfile -Command \
+          "Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -Command defrag.exe /C /O /U /V; pause'"
+    fi
+}
+
+##################################################
+function wincleanit()
+{
+    windiskclean
+    windiskdefrag
+    sdelete -z c:
+}
+##################################################
 function patchmac()
 {
     if command -v mas >/dev/null 2>&1
