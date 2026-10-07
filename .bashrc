@@ -1,4 +1,4 @@
-# 20261006 Kirby
+# 20261007 Kirby
 
 
 ##################################################
@@ -793,6 +793,28 @@ function patchcygwin()
 }
 
 ##################################################
+function patchmsstore()
+{
+    if command -v winget >/dev/null 2>&1
+    then
+      winget upgrade --source msstore --accept-source-agreements
+      winget upgrade --all --include-unknown --source msstore \
+          --accept-source-agreements --accept-package-agreements \
+          --disable-interactivity
+    else
+      echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
+    fi
+    if id -G | grep -qw 544
+    then
+      powershell.exe -NoProfile -Command \
+          'Get-CimInstance -Namespace root/cimv2/mdm/dmmap -ClassName MDM_EnterpriseModernAppManagement_AppManagement01 | Invoke-CimMethod -MethodName UpdateScanMethod | Out-Null' \
+          && echo "Store update scan started.  Updates install in the background"
+    else
+      echo "SKIPPING Store update scan.  Run Cygwin as Administrator"
+    fi
+}
+
+##################################################
 function patchmac()
 {
     if command -v mas >/dev/null 2>&1
@@ -1018,7 +1040,6 @@ function mycheckov()
     terraform init
     terraform plan --out delme.binary
     terraform show -json delme.binary | jq > delme.json
-
     checkov -f delme.json
 }
 
@@ -1075,8 +1096,10 @@ then
         echo "FAIL: no /tmp/"
         return 1
       fi
-      rm -f /tmp/setup-x86_64.exe >/dev/null 2>&1
-      wget --no-check-certificate https://cygwin.com/setup-x86_64.exe
+      if [[ ! -f /tmp/setup-x86_64.exe ]]
+      then
+        wget --no-check-certificate https://cygwin.com/setup-x86_64.exe
+      fi
       chmod 700 /tmp/setup-x86_64.exe
       /tmp/setup-x86_64.exe -q -P "$@"
       cd -
