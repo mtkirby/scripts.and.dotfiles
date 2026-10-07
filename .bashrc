@@ -717,14 +717,28 @@ function patchpip()
 ##################################################
 function patchcpan()
 {
-    if ! command -v cpan >/dev/null 2>&1
+    if ! brew list perl >/dev/null 2>&1
     then
-        echo "FAIL: cpan not found"
+        echo "FAIL: brew perl not found"
         return 1
     fi
-    export PERL_MM_USE_DEFAULT=1
-    cpan -O
-    cpan -u
+    local pbin
+    pbin="$(brew --prefix perl)/bin"
+    if [[ ! -x "$pbin/cpan" ]]
+    then
+        echo "FAIL: $pbin/cpan not found"
+        return 1
+    fi
+    local -x PATH="$pbin:$PATH"
+    local -x PERL_MM_USE_DEFAULT=1
+    "$pbin/cpan" CPAN App::cpanoutdated
+    "$pbin/cpan" -O
+    "$pbin/cpan" -u
+    for mod in $("$pbin/cpan-outdated" -p)
+    do
+        echo "#################### $mod"
+        "$pbin/cpan" -f -i "$mod"
+    done
     if [[ -d ~/.cpan/build ]]
     then
         echo 'Deleting ~/.cpan/build'
@@ -764,7 +778,7 @@ function patchapt()
 ##################################################
 alias patchfreebsd='sudo pkg update; echo y|sudo pkg upgrade'
 alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
-alias patchpkgin='sudo pkgin update; echo y|sudo pkgin upgrade'
+alias patchpkgin='sudo /opt/pkg/bin/pkgin update; echo y|sudo /opt/pkg/bin/pkgin upgrade'
 alias patchopenindiana='sudo pkg update'
 alias patchhaiku='pkgman refresh; pkgman update -y; pkgman full-sync'
 alias patchminix='pkgin update; pkgin -y full-upgrade'
@@ -875,13 +889,12 @@ function patchmacports()
     echo y|sudo port list installed > ~/port-list-installed 2>/dev/null &
     echo y|sudo port diagnose
     sudo chmod -R 755 /opt/local/Library
-    sudo chmod -R 755 /opt/local/bin
+    sudo chmod -R 755 /opt/local/bin/[^s][^u][^d][^o]*
     sudo chmod -R 755 /opt/local/sbin
     sudo chmod -R 755 /opt/local/lib
     sudo chmod -R 755 /opt/local/libexec
     sudo chmod -R 755 /opt/local/share
     sudo chmod -R 755 /opt/local/include
-    sudo chmod 4511 /opt/local/bin/sudo
 }
 ##################################################
 function patchhomebrew()
@@ -1100,6 +1113,36 @@ function failalarm()
 }
 
 ##################################################
+function myhbrewclam()
+{
+    brew list clamav >/dev/null 2>&1 || brew install -y clamav
+    local prefix
+    prefix="$(brew --prefix)"
+    if [[ ! -s "$prefix/etc/clamav/freshclam.conf" ]]
+    then
+      cat >"$prefix/etc/clamav/freshclam.conf" <<EOF
+DatabaseDirectory $prefix/var/lib/clamav
+CVDCertsDirectory $prefix/etc/clamav/certs
+UpdateLogFile     $prefix/var/log/freshclam.log
+LogTime           yes
+LogVerbose        yes
+LogRotate         yes
+DatabaseMirror    database.clamav.net
+MaxAttempts       5
+CompressLocalDatabase no
+EOF
+    fi
+    nice "$prefix/bin/freshclam" --show-progress -v
+    nice "$prefix/bin/clamscan" -r -i \
+        --detect-pua=yes \
+        --fail-if-cvd-older-than=7 \
+        --exclude-dir="^$HOME/Library/(CloudStorage|Mobile Documents|Caches)" \
+        --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
+        --log="$prefix/var/log/clamscan.log" \
+        "$HOME"
+}
+
+##################################################
 function mkbanner()
 {
     local display="${1:-BLAH}"
@@ -1180,6 +1223,27 @@ then
     done
     IFS=$' \t\n'
 	command -v MacVim >/dev/null 2>&1 && alias gvim=MacVim
+
+##
+    function mymacpatchall()
+    {
+        mkbanner "patchmac"
+        patchmac
+        mkbanner "patchhomebrew"
+        patchhomebrew
+        mkbanner "patchmacports"
+        patchmacports
+        mkbanner "patchpkgin"
+        patchpkgin
+        mkbanner "patchpip"
+        patchpip
+        mkbanner "patchcpan"
+        patchcpan
+        mkbanner "patchnpm"
+        patchnpm
+        mkbanner "myhbrewclam"
+        myhbrewclam
+    }
 
 ##
     function free()
