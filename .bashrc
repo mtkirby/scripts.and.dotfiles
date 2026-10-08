@@ -1,4 +1,4 @@
-# 20261007 Kirby
+# 20261008 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091
 
 ##################################################
@@ -40,8 +40,10 @@ do
 done
 
 IFS=: read -ra dirs <<< "$oldPATH"
-for i in "${dirs[@]}"; do
-    if [[ ":$PATH:" != *":$i:"* ]]; then
+for i in "${dirs[@]}"
+do
+    if [[ ":$PATH:" != *":$i:"* ]]
+    then
         PATH="${PATH}:${i}"
     fi
 done
@@ -673,11 +675,13 @@ function mysleep
 
 ##################################################
 whoipy() {
-    if [ -z "$1" ]; then
+    if [ -z "$1" ]
+    then
         echo "Usage: whoipy <IP_ADDRESS>" >&2
         return 1
     fi
-    if ! python3 -c 'import ipwhois' &>/dev/null; then
+    if ! python3 -c 'import ipwhois' &>/dev/null
+    then
         echo "ipwhois not found. Installing via pip..." >&2
         python3 -m pip install ipwhois || return 1
     fi
@@ -685,7 +689,8 @@ whoipy() {
     local clean_ip
     clean_ip=$(printf '%s' "$1" | tr -cd '0-9a-fA-F.:')
 
-    if [ -z "$clean_ip" ]; then
+    if [ -z "$clean_ip" ]
+    then
         echo "Error: No valid IP address characters provided." >&2
         return 1
     fi
@@ -707,6 +712,11 @@ print(json.dumps(IPWhois(argv[1]).lookup_rdap()))
 ##################################################
 function patchpip()
 {
+    if ! command -v pip >/dev/null 2>&1
+    then
+        echo "FAIL: no pip installed"
+        return 1
+    fi
     pip install --upgrade pip
     pip install pip-review
     pip-review --auto --continue-on-fail
@@ -782,6 +792,11 @@ function patchnpm()
 ##################################################
 function patchapt()
 {
+    if ! command -v apt >/dev/null 2>&1
+    then
+        echo "FAIL: apt not found"
+        return 1
+    fi
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
     apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade -y
@@ -803,6 +818,11 @@ alias patchminix='pkgin update; pkgin -y full-upgrade'
 ##################################################
 function patchdnf()
 {
+    if ! command -v dnf >/dev/null 2>&1
+    then
+        echo "FAIL: dnf not found"
+        return 1
+    fi
     if uname -r 2>/dev/null |grep -qi amzn
     then
         dnf --refresh update -y --releasever=latest
@@ -818,7 +838,8 @@ function patchdnf()
 ##################################################
 function highlight()
 {
-  if [ -z "$1" ]; then
+  if [ -z "$1" ]
+  then
     echo "Usage: <command> | highlight <pattern> [color]" >&2
     echo -e "Colors:\n\tred\n\tgreen\n\tyellow\n\tblue\n\tpurple\n\tcyan\n\twhite\n\tbg-red\n\tbg-yellow"
 
@@ -855,7 +876,8 @@ function highlight()
 ##################################################
 function shellcolors()
 {
-    for i in {0..255}; do
+    for i in {0..255}
+    do
         reg="\e[${i}m"
         bold="\e[${i};1m"
         bak="\e[$((i+10))m"
@@ -1174,7 +1196,7 @@ if uname -s 2>/dev/null|grep -q Darwin
 then
 
     alias micreset='tccutil reset Microphone'
-    alias code=Code
+    alias code=/Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin/code
 
     [[ -e /opt/local/bin/sudo ]] && alias s='/opt/local/bin/sudo'
 
@@ -1238,8 +1260,58 @@ then
     }
 
     ##
+	function patchmacvs()
+	{
+        local extdir="$HOME/.vscode/extensions"
+        local obsolete="$extdir/.obsolete"
+        local isrunning=0
+
+        if pgrep -x "Code" >/dev/null 2>&1
+        then
+            isrunning=1
+        fi
+
+        # Update extensions
+        /Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin/code \
+		   	--update-extensions || return 1
+
+        # Gracefully quit VS Code
+        osascript -e 'tell application "Visual Studio Code" to quit' || return 1
+
+        # Wait for VS Code to exit
+        while pgrep -x "Code" >/dev/null
+        do
+            sleep 1
+        done
+
+        # Remove obsolete extensions
+        if [[ -f "$obsolete" ]]
+        then
+            jq -r 'to_entries[] | select(.value == true) | .key' "$obsolete" |
+            while IFS= read -r ext
+            do
+                case "$ext" in
+                    ""|.|..|*/*) continue ;;
+                esac
+    
+                if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
+                then
+                    echo "Removing obsolete extension: $ext"
+                    rm -rf -- "$extdir/$ext"
+                fi
+            done
+        fi
+    
+        # Restart VS Code
+        [[ "$isrunning" == 1 ]] && open -a "Visual Studio Code"
+    }
+
+
+    ##
     function mymacpatchall()
     {
+        mkbanner "patchmacvs"
+		patchmacvs
         mkbanner "patchmac"
         patchmac
         mkbanner "patchhomebrew"
@@ -1261,7 +1333,11 @@ then
     ##
     function myhbrewclam()
     {
-        brew list clamav >/dev/null 2>&1 || brew install -y clamav
+        if ! brew list clamav >/dev/null 2>&1
+        then
+            echo "FAIL: NO CLAMAV: RUN brew install -y clamav"
+            return 1
+        fi
         local prefix
         prefix="$(brew --prefix)"
         if [[ ! -s "$prefix/etc/clamav/freshclam.conf" ]]
