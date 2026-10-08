@@ -1,5 +1,5 @@
 # 20261007 Kirby
-
+# shellcheck shell=bash disable=SC1090,SC1091
 
 ##################################################
 # SETUP PATH
@@ -84,7 +84,7 @@ then
     then
         export BAT_PAGER="less -RFX"
     fi
-    if bat --list-themes 2>&1 |grep -q Catpuccin
+    if bat --list-themes 2>&1 |grep -q Catppuccin
     then
         export BAT_THEME='Catppuccin Mocha'
     elif bat --list-themes 2>&1 |grep -q zenburn
@@ -102,7 +102,7 @@ export EDITOR=vi
 
 if [[ -d /opt/homebrew ]]
 then
-    eval "$(/opt/homebrew/bin/brew shellenv bash |grep -v 'export PATH=')"
+    eval "$(PATH=/usr/bin:/bin /opt/homebrew/bin/brew shellenv bash |grep -v 'export PATH=')"
 fi
 
 
@@ -229,9 +229,9 @@ esac
 
 mkpromptcmd() {
     local last_status=$?
-    local last_cmd
+    #local last_cmd
     local load
-    last_cmd=$(history 1)
+    #last_cmd=$(history 1)
 
     history -a >/dev/null 2>&1
 
@@ -276,11 +276,11 @@ mkpromptcmd() {
 #        myoldawsprofile="$AWS_PROFILE"
 #    fi
 
-    if [[ "$ihavegit" == "YES" ]] \
-    && echo "$last_cmd" |grep -qE 'git |GIT'
-    then
-        dogitps
-    fi
+    #if [[ "$ihavegit" == "YES" ]] \
+    #&& echo "$last_cmd" |grep -qE 'git |GIT'
+    #then
+    #    dogitps
+    #fi
 
     if [[ -f ~/psalert ]]
     then
@@ -395,6 +395,7 @@ ERR_MAP=(
 )
 
 declare -A AWS_ERR_MAP >/dev/null 2>&1
+# shellcheck disable=SC2034 # used by the commented-out code in mkpromptcmd
 AWS_ERR_MAP=(
     [252]=":AWS Invalid Syntax/Parameter"
     [253]=":AWS Invalid Configuration"
@@ -402,6 +403,7 @@ AWS_ERR_MAP=(
 )
 
 declare -A CURL_ERR_MAP >/dev/null 2>&1
+# shellcheck disable=SC2034 # used by the commented-out code in mkpromptcmd
 CURL_ERR_MAP=(
     [6]=":DNS Resolution Error"
     [7]=":Failed Connect"
@@ -567,7 +569,8 @@ function getaws()
         return 1
     fi
 
-   myoldawsprofile=""
+    # shellcheck disable=SC2034 # used by the commented-out code in mkpromptcmd
+    myoldawsprofile=""
 
     myawsrole=$(aws sts get-caller-identity --query 'Arn' --output text 2>/dev/null | cut -d'/' -f2 |cut -d':' -f6 2>/dev/null)
 
@@ -588,7 +591,7 @@ function getaws()
     echo "Default Region: $AWS_DEFAULT_REGION"
     echo "Manual Region: $AWS_REGION"
     echo "Policy Names:"
-    for i in $(aws iam list-attached-role-policies --role-name $(aws sts get-caller-identity --query "Arn" --output text 2>/dev/null |cut -d'/' -f2) | jq -r '.AttachedPolicies[].PolicyName' 2>/dev/null)
+    for i in $(aws iam list-attached-role-policies --role-name "$(aws sts get-caller-identity --query "Arn" --output text 2>/dev/null |cut -d'/' -f2)" | jq -r '.AttachedPolicies[].PolicyName' 2>/dev/null)
     do
         echo -e "\t$i\n"
     done
@@ -634,13 +637,13 @@ function sshagent()
 
 ##################################################
 function dnstxtwrap() {
-    cat $1 |gzip -9|base64 -w75 |sed -e 's/^/  "/' |sed -e 's/$/"/'
+    cat "$1" |gzip -9|base64 -w75 |sed -e 's/^/  "/' |sed -e 's/$/"/'
 }
 
 ##################################################
 function dnstxt2txt()
 {
-    host -t TXT $1 $2 |grep -v ':' |sed -e 's/^[^"]*"//' |tr -d '" ' |base64 -d |gzip -d
+    host -t TXT "$1" ${2:+"$2"} |grep -v ':' |sed -e 's/^[^"]*"//' |tr -d '" ' |base64 -d |gzip -d
 }
 
 ##################################################
@@ -717,24 +720,36 @@ function patchpip()
 ##################################################
 function patchcpan()
 {
-    if ! brew list perl >/dev/null 2>&1
+    local pbin
+    if command -v brew >/dev/null 2>&1 && brew list perl >/dev/null 2>&1
+    then
+        pbin="$(brew --prefix perl)/bin"
+    elif [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]
     then
         echo "FAIL: brew perl not found"
         return 1
-    fi
-    local pbin
-    pbin="$(brew --prefix perl)/bin"
-    if [[ ! -x "$pbin/cpan" ]]
+    elif command -v cpan >/dev/null 2>&1
     then
-        echo "FAIL: $pbin/cpan not found"
+        pbin="$(dirname "$(command -v cpan)")"
+    else
+        echo "FAIL: cpan not found"
         return 1
     fi
+    if [[ ! -x "$pbin/cpan" ]] || [[ ! -x "$pbin/perl" ]]
+    then
+        echo "FAIL: cpan and perl not both found in $pbin"
+        return 1
+    fi
+    echo "Using $pbin/cpan"
     local -x PATH="$pbin:$PATH"
     local -x PERL_MM_USE_DEFAULT=1
+    local outdated
+    # shellcheck disable=SC2016 # $Config is perl, not shell
+    outdated="$("$pbin/perl" -MConfig -e 'print $Config{installsitebin}')/cpan-outdated"
     "$pbin/cpan" CPAN App::cpanoutdated
     "$pbin/cpan" -O
     "$pbin/cpan" -u
-    for mod in $("$pbin/cpan-outdated" -p)
+    for mod in $("$pbin/perl" "$outdated" -p)
     do
         echo "#################### $mod"
         "$pbin/cpan" -f -i "$mod"
@@ -776,10 +791,7 @@ function patchapt()
 }
 
 ##################################################
-alias patchfreebsd='sudo pkg update; echo y|sudo pkg upgrade'
-alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
 alias patchpkgin='sudo /opt/pkg/bin/pkgin update; echo y|sudo /opt/pkg/bin/pkgin upgrade'
-alias patchopenindiana='sudo pkg update'
 alias patchhaiku='pkgman refresh; pkgman update -y; pkgman full-sync'
 alias patchminix='pkgin update; pkgin -y full-upgrade'
 
@@ -797,123 +809,6 @@ function patchdnf()
     dnf needs-restarting
 }
 
-##################################################
-function patchcygwin()
-{
-    rm -f setup-x86_64.exe >/dev/null 2>&1
-    wget --no-check-certificate https://cygwin.com/setup-x86_64.exe
-    chmod 700 setup-x86_64.exe
-    ./setup-x86_64.exe -q --upgrade-also
-}
-
-##################################################
-function patchmsstore()
-{
-    if command -v winget >/dev/null 2>&1
-    then
-      winget upgrade --source msstore --accept-source-agreements
-      winget upgrade --all --include-unknown --source msstore \
-          --accept-source-agreements --accept-package-agreements \
-          --disable-interactivity
-    else
-      echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
-    fi
-    if id -G | grep -qw 544
-    then
-      powershell.exe -NoProfile -Command \
-          'Get-CimInstance -Namespace root/cimv2/mdm/dmmap -ClassName MDM_EnterpriseModernAppManagement_AppManagement01 | Invoke-CimMethod -MethodName UpdateScanMethod | Out-Null' \
-          && echo "Store update scan started.  Updates install in the background"
-    else
-      echo "SKIPPING Store update scan.  Run Cygwin as Administrator"
-    fi
-}
-
-##################################################
-function windiskclean()
-{
-    local vc='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
-    local ps="Get-ChildItem $vc"' | Where-Object PSChildName -ne DownloadsFolder | ForEach-Object { New-ItemProperty -Path $_.PSPath -Name StateFlags0001 -Value 2 -PropertyType DWord -Force | Out-Null }'
-    ps+="; New-ItemProperty -Path $vc\\DownloadsFolder -Name StateFlags0001 -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null"
-    ps+='; Start-Process cleanmgr.exe -ArgumentList /sagerun:1 -Wait'
-    powershell.exe -NoProfile -Command \
-        "Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile -Command $ps'" \
-        && echo "Disk Cleanup finished"
-}
-
-##################################################
-function windiskdefrag()
-{
-    if id -G | grep -qw 544
-    then
-      defrag.exe /C /O /U /V
-    else
-      powershell.exe -NoProfile -Command \
-          "Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -Command defrag.exe /C /O /U /V; pause'"
-    fi
-}
-
-##################################################
-function wincleanit()
-{
-    windiskclean
-    windiskdefrag
-    sdelete -z c:
-}
-##################################################
-function patchmac()
-{
-    if command -v mas >/dev/null 2>&1
-    then
-      mas outdated
-      mas upgrade
-    else
-      echo "SKIPPING mas.  Install mas with homebrew"
-    fi
-    softwareupdate --list
-    softwareupdate --install -all
-}
-
-##################################################
-function patchmacports()
-{
-    xcode-select --install
-    xcodebuild -checkFirstLaunchStatus \
-        || /opt/local/bin/sudo xcodebuild -license accept \
-        || sudo xcodebuild -license accept
-    xcodebuild -runFirstLaunch -checkForNewerComponents
-    echo y|sudo port selfupdate
-    echo y|sudo port -cu upgrade outdated
-    echo y|sudo port uninstall inactive
-    echo y|sudo port reclaim
-    echo y|sudo port clean --all -f all >/dev/null 2>&1 &
-    echo y|sudo port list installed > ~/port-list-installed 2>/dev/null &
-    echo y|sudo port diagnose
-    sudo chmod -R 755 /opt/local/Library
-    sudo chmod -R 755 /opt/local/bin/[^s][^u][^d][^o]*
-    sudo chmod -R 755 /opt/local/sbin
-    sudo chmod -R 755 /opt/local/lib
-    sudo chmod -R 755 /opt/local/libexec
-    sudo chmod -R 755 /opt/local/share
-    sudo chmod -R 755 /opt/local/include
-}
-##################################################
-function patchhomebrew()
-{
-    xcode-select --install
-    xcodebuild -checkFirstLaunchStatus \
-        || /opt/local/bin/sudo xcodebuild -license accept \
-        || sudo xcodebuild -license accept
-    xcodebuild -runFirstLaunch -checkForNewerComponents
-    brew update
-    brew upgrade -y
-    brew cleanup
-    brew doctor
-    if [[ -d ~/Library/Caches/Homebrew ]]
-    then
-        echo 'Deleting ~/Library/Caches/Homebrew'
-        rm -rf ~/Library/Caches/Homebrew >/dev/null 2>&1
-    fi
-}
 
 ##################################################
 function highlight()
@@ -1112,42 +1007,14 @@ function failalarm()
   false
 }
 
-##################################################
-function myhbrewclam()
-{
-    brew list clamav >/dev/null 2>&1 || brew install -y clamav
-    local prefix
-    prefix="$(brew --prefix)"
-    if [[ ! -s "$prefix/etc/clamav/freshclam.conf" ]]
-    then
-      cat >"$prefix/etc/clamav/freshclam.conf" <<EOF
-DatabaseDirectory $prefix/var/lib/clamav
-CVDCertsDirectory $prefix/etc/clamav/certs
-UpdateLogFile     $prefix/var/log/freshclam.log
-LogTime           yes
-LogVerbose        yes
-LogRotate         yes
-DatabaseMirror    database.clamav.net
-MaxAttempts       5
-CompressLocalDatabase no
-EOF
-    fi
-    nice "$prefix/bin/freshclam" --show-progress -v
-    nice "$prefix/bin/clamscan" -r -i \
-        --detect-pua=yes \
-        --fail-if-cvd-older-than=7 \
-        --exclude-dir="^$HOME/Library/(CloudStorage|Mobile Documents|Caches)" \
-        --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
-        --log="$prefix/var/log/clamscan.log" \
-        "$HOME"
-}
 
 ##################################################
 function mkbanner()
 {
     local display="${1:-BLAH}"
     local chars="${2:-#}"
-    local count=$(echo $display |wc -c |awk '{print $1}')
+    local count
+    count=$(echo "$display" |wc -c |awk '{print $1}')
     local printnum=$(( ( ${COLUMNS:-$(tput cols)} / 2 ) - ( $count / 2 ) - 2 ))
 
     printf '%*s' $printnum ' '|tr ' ' "$chars" 
@@ -1162,6 +1029,10 @@ then
     alias pbcopy='cat > /dev/clipboard'
     alias pbpaste='cat /dev/clipboard'
     alias open='cygstart'
+    function patchchoco()
+    {
+        choco upgrade all --ignore-dependencies -y
+    }
 
     function cyginstall()
     {
@@ -1172,20 +1043,103 @@ then
       fi
       if [[ ! -f /tmp/setup-x86_64.exe ]]
       then
-        wget --no-check-certificate https://cygwin.com/setup-x86_64.exe
+        wget https://cygwin.com/setup-x86_64.exe
       fi
       chmod 700 /tmp/setup-x86_64.exe
       /tmp/setup-x86_64.exe -q -P "$@"
-      cd -
+      cd - || return
     }
 
+    ##
+    function windiskclean()
+    {
+        local vc='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
+        # shellcheck disable=SC2016 # $_ is powershell, not shell
+        local ps="Get-ChildItem $vc"' | Where-Object PSChildName -ne DownloadsFolder | ForEach-Object { New-ItemProperty -Path $_.PSPath -Name StateFlags0001 -Value 2 -PropertyType DWord -Force | Out-Null }'
+        ps+="; New-ItemProperty -Path $vc\\DownloadsFolder -Name StateFlags0001 -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null"
+        ps+='; Start-Process cleanmgr.exe -ArgumentList /sagerun:1 -Wait'
+        powershell.exe -NoProfile -Command \
+        "Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile -Command $ps'" \
+            && echo "Disk Cleanup finished"
+    }
+
+    ##
+    function patchcygwin()
+    {
+        rm -f setup-x86_64.exe >/dev/null 2>&1
+        wget https://cygwin.com/setup-x86_64.exe
+        chmod 700 setup-x86_64.exe
+        ./setup-x86_64.exe -q --upgrade-also
+    }
+    
+    ##
+    function patchmsstore()
+    {
+        if command -v winget >/dev/null 2>&1
+        then
+          winget upgrade --source msstore --accept-source-agreements
+          winget upgrade --all --include-unknown --source msstore \
+              --accept-source-agreements --accept-package-agreements \
+              --disable-interactivity
+        else
+          echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
+        fi
+        if id -G | grep -qw 544
+        then
+          powershell.exe -NoProfile -Command \
+              'Get-CimInstance -Namespace root/cimv2/mdm/dmmap -ClassName MDM_EnterpriseModernAppManagement_AppManagement01 | Invoke-CimMethod -MethodName UpdateScanMethod | Out-Null' \
+              && echo "Store update scan started.  Updates install in the background"
+        else
+          echo "SKIPPING Store update scan.  Run Cygwin as Administrator"
+        fi
+    }
+        
+    ##
+    function windiskdefrag()
+    {
+        if id -G | grep -qw 544
+        then
+          defrag.exe /C /O /U /V
+        else
+          powershell.exe -NoProfile -Command \
+              "Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -Command defrag.exe /C /O /U /V; pause'"
+        fi
+    }
+    
+    ##
+    function wincleanit()
+    {
+        if ! id -G | grep -qw 544
+        then
+          echo "FAIL: run Cygwin as Administrator"
+          return 1
+        fi
+        patchchoco
+        patchmsstore
+        windiskclean
+        windiskdefrag
+        if ! command -v sdelete >/dev/null 2>&1
+        then
+          echo "SKIPPING sdelete.  Install it with: choco install sdelete"
+        elif [[ "$(powershell.exe -NoProfile -Command '(Get-PhysicalDisk | Where-Object DeviceId -eq (Get-Partition -DriveLetter C).DiskNumber).MediaType' | tr -d '\r')" == "SSD" ]]
+        then
+          echo "SKIPPING sdelete.  C: is an SSD"
+        else
+          sdelete -accepteula -z c:
+        fi
+    }
+
+    ##
     function winps() {
       tasklist.exe /FO TABLE
     }
+
+    ##
     function smem() {
       tasklist.exe /FO TABLE /NH | sort -k5 -n -r 
     }
 
+    ##
     function free() {
       powershell.exe -NoProfile -Command "Get-CimInstance Win32_OperatingSystem | Select-Object @{Name='TotalGB'; Expression={'{0:N2}' -f (\$_.TotalVisibleMemorySize / 1MB)}}, @{Name='FreeGB'; Expression={'{0:N2}' -f (\$_.FreePhysicalMemory / 1MB)}}"
     }
@@ -1196,6 +1150,8 @@ fi
 if uname -s 2>/dev/null|grep -q BSD
 then
     alias free="top -d1 |grep -E '^Mem:'"
+    alias patchfreebsd='sudo pkg update; echo y|sudo pkg upgrade'
+    alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
 fi
 
 ##################################################
@@ -1205,6 +1161,7 @@ then
     unalias rm
     unalias mv
     alias free="top -d 2 |grep -E '^Memory:'|head -1"
+    alias patchopenindiana='sudo pkg update'
 fi
 
 ##################################################
@@ -1224,7 +1181,58 @@ then
     IFS=$' \t\n'
 	command -v MacVim >/dev/null 2>&1 && alias gvim=MacVim
 
-##
+    ##
+    function patchmac()
+    {
+        if command -v mas >/dev/null 2>&1
+        then
+          mas outdated
+          mas upgrade
+        else
+          echo "SKIPPING mas.  Install mas with homebrew"
+        fi
+        softwareupdate --list
+        softwareupdate --install --all
+    }
+    
+    ##
+    function patchmacports()
+    {
+        xcode-select --install
+        xcodebuild -checkFirstLaunchStatus \
+            || /opt/local/bin/sudo xcodebuild -license accept \
+            || sudo xcodebuild -license accept
+        xcodebuild -runFirstLaunch -checkForNewerComponents
+        echo y|sudo port selfupdate
+        echo y|sudo port -cu upgrade outdated
+        echo y|sudo port uninstall inactive
+        echo y|sudo port reclaim
+        echo y|sudo port clean --all -f all >/dev/null 2>&1 &
+        # shellcheck disable=SC2024 # the list file should be owned by me, not root
+        echo y|sudo port list installed > ~/port-list-installed 2>/dev/null &
+        echo y|sudo port diagnose
+        sudo chmod -R go+rX /opt/local/{Library,bin,sbin,lib,libexec,share,include}
+    }
+    ##
+    function patchhomebrew()
+    {
+        xcode-select --install
+        xcodebuild -checkFirstLaunchStatus \
+            || /opt/local/bin/sudo xcodebuild -license accept \
+            || sudo xcodebuild -license accept
+        xcodebuild -runFirstLaunch -checkForNewerComponents
+        brew update
+        brew upgrade -y
+        brew cleanup
+        brew doctor
+        if [[ -d ~/Library/Caches/Homebrew ]]
+        then
+            echo 'Deleting ~/Library/Caches/Homebrew'
+            rm -rf ~/Library/Caches/Homebrew >/dev/null 2>&1
+        fi
+    }
+
+    ##
     function mymacpatchall()
     {
         mkbanner "patchmac"
@@ -1245,7 +1253,37 @@ then
         myhbrewclam
     }
 
-##
+    ##
+    function myhbrewclam()
+    {
+        brew list clamav >/dev/null 2>&1 || brew install -y clamav
+        local prefix
+        prefix="$(brew --prefix)"
+        if [[ ! -s "$prefix/etc/clamav/freshclam.conf" ]]
+        then
+          cat >"$prefix/etc/clamav/freshclam.conf" <<EOF
+DatabaseDirectory $prefix/var/lib/clamav
+CVDCertsDirectory $prefix/etc/clamav/certs
+UpdateLogFile     $prefix/var/log/freshclam.log
+LogTime           yes
+LogVerbose        yes
+LogRotate         yes
+DatabaseMirror    database.clamav.net
+MaxAttempts       5
+CompressLocalDatabase no
+EOF
+        fi
+        nice "$prefix/bin/freshclam" --show-progress -v
+        nice "$prefix/bin/clamscan" -r -i \
+            --detect-pua=no \
+            --fail-if-cvd-older-than=7 \
+            --exclude-dir="^$HOME/Library/(CloudStorage|Mobile Documents|Caches)" \
+            --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
+            --log="$prefix/var/log/clamscan.log" \
+            "$HOME"
+    }
+
+    ##
     function free()
     {
         local total_bytes swap
@@ -1284,9 +1322,8 @@ then
             printf "%-6s %10.2fG %10.2fG %10.2fG\n", "Swap:", st/1024, su/1024, sf/1024
         }'
     }
-##
 
-##
+    ##
     function smem()
     {
         for i in $(ps -axo pid | sort -n | grep -v PID)
@@ -1307,8 +1344,6 @@ then
         | cut -f2-
         return 0
     }
-##
-
 fi
 
 ##################################################
