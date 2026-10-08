@@ -11,7 +11,7 @@ fi
 # Ensure VS Code is not actively running
 if pgrep -f "Visual Studio Code" >/dev/null 2>&1; then
   echo "Error: Visual Studio Code is running. Close it before purging extensions." >&2
-  #exit 1
+  exit 1
 fi
 
 # Backup manifest before modification
@@ -42,7 +42,7 @@ find "$EXT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*-*.*.*" -exec basename {
       for (( i=0; i<count-1; i++ )); do
         target="$EXT_DIR/${versions[i]}"
         echo "Purging old version: $target"
-        #rm -rf "$target"
+        rm -rf "$target"
       done
     fi
 done
