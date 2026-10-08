@@ -553,13 +553,18 @@ function dogitps()
         fi
     done
 }
+
 ##################################################
 function cd()
 {
     builtin cd "$@" && {
-        dogitps
+        if [[ $ihavegit == 'YES' ]]
+        then
+            dogitps
+        fi
     }
 }
+
 ##################################################
 function getaws()
 {
@@ -1280,7 +1285,13 @@ EOF
             --exclude-dir="^$HOME/Library/(CloudStorage|Mobile Documents|Caches)" \
             --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
             --log="$prefix/var/log/clamscan.log" \
-            "$HOME"
+            "${VIRTUAL_ENV}" \
+            "${HOME}"/Downloads \
+            "${HOME}"/Documents \
+            "${HOME}"/.cpan \
+            "${HOME}"/.npm \
+            "${HOME}"/.vscode \
+            "${HOME}"/Library/'Application Support'/Firefox/Profiles/*/extensions
     }
 
     ##
