@@ -1,4 +1,4 @@
-# 20261008 Kirby
+# 20261009 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091
 
 ##################################################
@@ -733,6 +733,28 @@ function patchpip()
 }
 
 ##################################################
+function cpanhbinstall()
+{
+    if ! command -v brew >/dev/null 2>&1 || ! brew list perl >/dev/null 2>&1
+    then
+        echo "FAIL: brew perl not found"
+        return 1
+    fi
+    rm -rf ~/.cpan/build >/dev/null 2>&1
+    brew list xz >/dev/null 2>&1 || brew install -y xz
+    local prefix pbin xz
+    prefix="$(brew --prefix)"
+    pbin="$(brew --prefix perl)/bin"
+    xz="$(brew --prefix xz)"
+    PATH="$pbin:$PATH" \
+    LIBLZMA_INCLUDE="$xz/include" \
+    LIBLZMA_LIB="$xz/lib" \
+    CFLAGS="-I$prefix/include" \
+    LDFLAGS="-L$prefix/lib" \
+    "$pbin/cpan" "$@"
+}
+
+##################################################
 function patchcpan()
 {
     local pbin
@@ -1216,7 +1238,7 @@ then
           mas outdated
           mas upgrade
         else
-          echo "SKIPPING mas.  Install mas with homebrew"
+          echo "FAIL: SKIPPING mas.  Install mas with homebrew"
         fi
         softwareupdate --list
         softwareupdate --install --all
