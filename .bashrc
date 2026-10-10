@@ -1,5 +1,5 @@
 # 20261010 Kirby
-# shellcheck shell=bash disable=SC1090,SC1091
+# shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
 # SETUP PATH
@@ -10,6 +10,10 @@ unset PATH
 #export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/usr/libexec:/usr/local/bin:/usr/local/sbin:$HOME/.local/bin:$HOME/bin
 
 for i in \
+    $HOME/.local/bin \
+    $HOME/bin \
+    $HOME/scripts \
+    $HOME/perl5/bin \
     /opt/homebrew/bin \
     /opt/homebrew/sbin \
     /opt/homebrew/libexec \
@@ -31,11 +35,7 @@ for i in \
     /usr/sbin \
     /usr/libexec \
     /usr/local/bin \
-    /usr/local/sbin \
-    $HOME/.local/bin \
-    $HOME/bin \
-    $HOME/scripts \
-    $HOME/perl5/bin 
+    /usr/local/sbin 
 do
     [[ -d "$i" ]] && export PATH="${PATH:+${PATH}:}${i}"
 done
@@ -546,14 +546,15 @@ function dogitps()
 {
     PSGITREPO=""
     local mypwd="$PWD"
+    local mygitbranch mygitbranchcount mygitrepo
     while [[ -n "$mypwd" ]]
     do
         if [[ -d "${mypwd}/.git" ]]
         then
             if mygitrepo=$(git config remote.origin.url 2>/dev/null)
             then
-                local mygitbranch=$(git branch --show-current)
-                local mygitbranchcount=$(git branch |wc -l |awk '{print $1}')
+                mygitbranch=$(git branch --show-current)
+                mygitbranchcount=$(git branch |wc -l |awk '{print $1}')
                 PSGITREPO=$(echo -e "\n\033[93;1;40m  ## GIT ${mygitbranch}/${mygitbranchcount} @ ${mygitrepo} ##\033[0m")
             else
                 PSGITREPO=""
@@ -585,6 +586,9 @@ function getaws()
         return 1
     fi
 
+    local myawsrole myawsaccountname myregion
+    PSAWS=""
+
     # shellcheck disable=SC2034 # used by the commented-out code in mkpromptcmd
     myoldawsprofile=""
 
@@ -599,7 +603,8 @@ function getaws()
     fi
     export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
 
-    export PSAWS=$(echo -e "\n\033[93;1;40m  ## ${AWS_PROFILE}: ${myawsrole} @ ${myawsaccountname} @ ${AWS_REGION:-$AWS_DEFAULT_REGION} ##\033[0m ")
+    PSAWS=$(echo -e "\n\033[93;1;40m  ## ${AWS_PROFILE}: ${myawsrole} @ ${myawsaccountname} @ ${AWS_REGION:-$AWS_DEFAULT_REGION} ##\033[0m ")
+    export PSAWS
 
     echo "AWS  Profile: $AWS_PROFILE"
     echo "Amazon  Role: $myawsrole"
@@ -665,7 +670,7 @@ function dnstxt2txt()
 ##################################################
 function getarpa()
 {
-    echo $1 | awk -F. '{print $4"."$3"."$2"."$1".in-addr.arpa."}'
+    echo "$1" | awk -F. '{print $4"."$3"."$2"."$1".in-addr.arpa."}'
 }
 
 ##################################################
@@ -677,7 +682,7 @@ function mysleep
     do
         printf "\e[K#sleeping %s/%s T-%s\r" "$c" "$1" "$i"
         sleep 1
-        let c++
+        (( c++ ))
     done
     printf "\e[K\r"
 }
@@ -753,7 +758,7 @@ function patchpip()
     for pkg in $(pip list --outdated | tail -n +3 | awk '{print $1}')
     do 
         echo "#################### $pkg"
-        pip install -U --force-reinstall --ignore-requires-python $pkg
+        pip install -U --force-reinstall --ignore-requires-python "$pkg"
     done
     if [[ -d ~/Library/Caches/pip ]]
     then
@@ -1220,7 +1225,7 @@ function mkbanner()
     local chars="${2:-#}"
     local count
     count=$(echo "$display" |wc -c |awk '{print $1}')
-    local printnum=$(( ( ${COLUMNS:-$(tput cols)} / 2 ) - ( $count / 2 ) - 2 ))
+    local printnum=$(( ( ${COLUMNS:-$(tput cols)} / 2 ) - ( count / 2 ) - 2 ))
 
     printf '%*s' $printnum ' '|tr ' ' "$chars" 
     echo -n "  $display  "
@@ -1261,8 +1266,9 @@ then
     ##
 	function patchwinvs()
 	{
-        local extdir="/cygdrive/c/users/$(whoami)/.vscode/extensions"
-        local obsolete="$extdir/.obsolete"
+        local extdir obsolete ext
+        extdir="/cygdrive/c/users/$(whoami)/.vscode/extensions"
+        obsolete="$extdir/.obsolete"
 
         if ps -W |grep -qi Code.exe >/dev/null 2>&1
         then
@@ -1664,7 +1670,7 @@ EOF
     {
         for i in $(ps -axo pid | sort -n | grep -v PID)
         do
-            /opt/local/bin/sudo footprint -p $i 2>/dev/null \
+            /opt/local/bin/sudo footprint -p "$i" 2>/dev/null \
                 | grep 'Footprint:' \
                 | grep -v KB \
                 | 'grep' -E ' [GM]B' \
