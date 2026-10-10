@@ -1306,25 +1306,25 @@ then
           return 1
         fi
         mkbanner "patchwinvs"
-        patchwinvs
+        patchwinvs 2>&1 |tee /tmp/patchwinvs.log
         mkbanner "patchcygwin"
-        patchcygwin
+        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         mkbanner "patchmsstore"
-        patchmsstore
+        patchmsstore 2>&1 |tee /tmp/patchmsstore.log
         mkbanner "patchchoco"
-        patchchoco
+        patchchoco 2>&1 |tee /tmp/patchchoco.log
         mkbanner "patchpip"
-        patchpip
+        patchpip 2>&1 |tee /tmp/patchpip.log
         mkbanner "patchgem"
-        patchgem
+        patchgem 2>&1 |tee /tmp/patchgem.log
         mkbanner "patchcpan"
-        patchcpan
+        patchcpan 2>&1 |tee /tmp/patchcpan.log
         mkbanner "patchnpm"
-        patchnpm
+        patchnpm 2>&1 |tee /tmp/patchnpm.log
         mkbanner "windiskclean"
-        windiskclean
+        windiskclean 2>&1 |tee /tmp/windiskclean.log
         mkbanner "windiskdefrag"
-        windiskdefrag
+        windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
     }
 
     ##
@@ -1562,25 +1562,25 @@ then
     function mymacpatchall()
     {
         mkbanner "patchmacvs"
-		patchmacvs
+		patchmacvs 2>&1 |tee /tmp/patchmacvs.log
         mkbanner "patchmac"
-        patchmac
+        patchmac 2>&1 |tee /tmp/patchmac.log
         mkbanner "patchhomebrew"
-        patchhomebrew
+        patchhomebrew 2>&1 |tee /tmp/patchhomebrew.log
         mkbanner "patchmacports"
-        patchmacports
+        patchmacports 2>&1 |tee /tmp/patchmacports.log
         mkbanner "patchpkgin"
-        patchpkgin
+        patchpkgin 2>&1 |tee /tmp/patchpkgin.log
         mkbanner "patchpip"
-        patchpip
+        patchpip 2>&1 |tee /tmp/patchpip.log
         mkbanner "patchgem"
-        patchgem
+        patchgem 2>&1 |tee /tmp/patchgem.log
         mkbanner "patchcpan"
-        patchcpan
+        patchcpan 2>&1 |tee /tmp/patchcpan.log
         mkbanner "patchnpm"
-        patchnpm
+        patchnpm 2>&1 |tee /tmp/patchnpm.log
         mkbanner "myhbrewclam"
-        myhbrewclam
+        myhbrewclam 2>&1 |tee /tmp/myhbrewclam.log
     }
 
     ##
@@ -1618,6 +1618,7 @@ EOF
             "${HOME}"/Downloads \
             "${HOME}"/Documents \
             "${HOME}"/.cpan \
+            "${HOME}"/.local \
             "${HOME}"/.npm \
             "${HOME}"/.vscode \
             "${HOME}"/Library/'Application Support'/Firefox/Profiles/*/extensions
