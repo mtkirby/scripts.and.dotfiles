@@ -4,7 +4,7 @@
 " --- VISUALS & WHITESPACE ---
 "set list                    " Show hidden characters 
 " Set visible characters for tabs, EOL, etc 
-"set listchars=tab:→\ ,eol:↲,nbsp:␣,trail:•,extends:⟩,precedes:⟨ 
+set listchars=space:·,tab:→\ ,eol:↲,nbsp:␣,trail:•,extends:⟩,precedes:⟨ 
 
 set background=dark
 if has("termguicolors")

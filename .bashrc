@@ -710,6 +710,27 @@ print(json.dumps(IPWhois(argv[1]).lookup_rdap()))
 # jq '.asn_cidr |split(", ")[]'
 
 ##################################################
+function patchgem()
+{
+    if ! command -v gem >/dev/null 2>&1
+    then
+        echo "FAIL: no gem installed"
+        return 1
+    fi
+    if brew --prefix ruby >/dev/null 2>&1
+    then
+        echo "chmod'ing u+w ruby dir"
+        chmod -R u+w "$(brew --prefix ruby)" /opt/homebrew/Cellar/ruby
+    fi
+
+    gem update --system
+    gem update
+    echo "######## gem outdated report"
+    gem outdated
+    echo "######################################"
+}
+
+##################################################
 function patchpip()
 {
     if ! command -v pip >/dev/null 2>&1
@@ -730,6 +751,9 @@ function patchpip()
         echo 'Deleting ~/Library/Caches/pip'
         rm -rf ~/Library/Caches/pip >/dev/null 2>&1
     fi
+    echo "######## pip list --outdated report"
+    pip list --outdated
+    echo "######################################"
 }
 
 ##################################################
@@ -745,12 +769,12 @@ function cpanhbinstall()
     local prefix pbin xz
     prefix="$(brew --prefix)"
     pbin="$(brew --prefix perl)/bin"
-    xz="$(brew --prefix xz)"
+    local xz="$(brew --prefix xz)"
     PATH="$pbin:$PATH" \
-    LIBLZMA_INCLUDE="$xz/include" \
-    LIBLZMA_LIB="$xz/lib" \
-    CFLAGS="-I$prefix/include" \
-    LDFLAGS="-L$prefix/lib" \
+    local -x LIBLZMA_INCLUDE="$xz/include" \
+    local -x LIBLZMA_LIB="$xz/lib" \
+    local -x CFLAGS="-I$prefix/include" \
+    local -x LDFLAGS="-L$prefix/lib" \
     "$pbin/cpan" "$@"
 }
 
@@ -780,6 +804,11 @@ function patchcpan()
     echo "Using $pbin/cpan"
     local -x PATH="$pbin:$PATH"
     local -x PERL_MM_USE_DEFAULT=1
+    local xz="$(brew --prefix xz)"
+    local -x LIBLZMA_INCLUDE="$xz/include"
+    local -x LIBLZMA_LIB="$xz/lib"
+    local -x CFLAGS="-I$prefix/include"
+    local -x LDFLAGS="-L$prefix/lib"
     local outdated
     # shellcheck disable=SC2016 # $Config is perl, not shell
     outdated="$("$pbin/perl" -MConfig -e 'print $Config{installsitebin}')/cpan-outdated"
@@ -789,13 +818,22 @@ function patchcpan()
     for mod in $("$pbin/perl" "$outdated" -p)
     do
         echo "#################### $mod"
-        "$pbin/cpan" -f -i "$mod"
+        LIBLZMA_INCLUDE="$(brew --prefix xz)/include" LIBLZMA_LIB="$(brew --prefix xz)/lib" CFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib" "$pbin/cpan" -f -i "$mod"
     done
+    for mod in $("$pbin/perl" "$outdated" --verbose |awk '{print $4}')
+    do
+        echo "#################### $mod"
+        LIBLZMA_INCLUDE="$(brew --prefix xz)/include" LIBLZMA_LIB="$(brew --prefix xz)/lib" CFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib" "$pbin/cpan" -f -i "$mod"
+    done
+
     if [[ -d ~/.cpan/build ]]
     then
         echo 'Deleting ~/.cpan/build'
         rm -rf ~/.cpan/build >/dev/null 2>&1
     fi
+    echo "######## cpan-oudated --verbose report"
+    "$pbin/perl" "$outdated" --verbose
+    echo "######################################"
 }
 
 ##################################################
@@ -809,6 +847,9 @@ function patchnpm()
     npm install -g npm@latest
     npm outdated -g
     npm update -g
+    echo "######## npm outdated -g report"
+    npm outdated -g
+    echo "######################################"
 }
 
 ##################################################
@@ -925,6 +966,25 @@ function urldecode()
 {
     local url_encoded="${1//+/ }"
     printf '%b\n' "${url_encoded//%/\\x}"
+}
+
+##################################################
+function mytfdoc()
+{
+    if [[ ! -d ".terraform" ]]
+    then
+        echo "This is not a terraform dir"
+        return 1
+    fi
+    mkdir -p docs >/dev/null 2>&1
+    terraform-docs markdown . --output-file docs/tfdoc.md
+    terraform-docs json . --output-file docs/tfdoc.json
+    terraform-docs tfvars hcl . --output-file docs/tfdoc.tfvars.hcl
+    terraform-docs tfvars json . --output-file docs/tfdoc.tfvars.json
+    terraform-docs toml . --output-file docs/tfdoc.toml
+    terraform-docs xml . --output-file docs/tfdoc.xml
+    terraform-docs yaml . --output-file docs/tfdoc.yaml
+    terraform graph -type=plan |terraform-graph-beautifier --output docs/tfgraph.html
 }
 
 ##################################################
@@ -1078,11 +1138,14 @@ then
     alias pbcopy='cat > /dev/clipboard'
     alias pbpaste='cat /dev/clipboard'
     alias open='cygstart'
+
+    ##
     function patchchoco()
     {
         choco upgrade all --ignore-dependencies -y
     }
 
+    ##
     function cyginstall()
     {
       if ! cd /tmp/
@@ -1097,6 +1160,71 @@ then
       chmod 700 /tmp/setup-x86_64.exe
       /tmp/setup-x86_64.exe -q -P "$@"
       cd - || return
+    }
+
+    ##
+	function patchwinvs()
+	{
+        local extdir="/cygdrive/c/users/$(whoami)/.vscode/extensions"
+        local obsolete="$extdir/.obsolete"
+
+        if ps -W |grep -qi Code.exe >/dev/null 2>&1
+        then
+            echo "FAIL: must exit VS Code first"
+            return 1
+        fi
+
+        # Update extensions
+        /cygdrive/c/'Program Files'/'Microsoft VS Code'/bin/code \
+		   	--update-extensions || return 1
+
+        # Remove obsolete extensions
+        if [[ -f "$obsolete" ]]
+        then
+            jq -r 'to_entries[] | select(.value == true) | .key' "$obsolete" |
+            while IFS= read -r ext
+            do
+                case "$ext" in
+                    ""|.|..|*/*) continue ;;
+                esac
+    
+                if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
+                then
+                    echo "Removing obsolete extension: $ext"
+                    rm -rf -- "$extdir/$ext"
+                fi
+            done
+        fi
+    }
+
+    ##
+    function mywinpatchall()
+    {
+        if ! id -G | grep -qw 544
+        then
+          echo "FAIL: run Cygwin as Administrator"
+          return 1
+        fi
+        mkbanner "patchwinvs"
+        patchwinvs
+        mkbanner "patchcygwin"
+        patchcygwin
+        mkbanner "patchmsstore"
+        patchmsstore
+        mkbanner "patchchoco"
+        patchchoco
+        mkbanner "patchpip"
+        patchpip
+        mkbanner "patchgem"
+        patchgem
+        mkbanner "patchcpan"
+        patchcpan
+        mkbanner "patchnpm"
+        patchnpm
+        mkbanner "windiskclean"
+        windiskclean
+        mkbanner "windiskdefrag"
+        windiskdefrag
     }
 
     ##
@@ -1218,7 +1346,6 @@ if uname -s 2>/dev/null|grep -q Darwin
 then
 
     alias micreset='tccutil reset Microphone'
-    alias code=/Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin/code
 
     [[ -e /opt/local/bin/sudo ]] && alias s='/opt/local/bin/sudo'
 
@@ -1270,10 +1397,12 @@ then
             || /opt/local/bin/sudo xcodebuild -license accept \
             || sudo xcodebuild -license accept
         xcodebuild -runFirstLaunch -checkForNewerComponents
+        chmod -R u+w "$(brew --prefix)"
         brew update
         brew upgrade -y
         brew cleanup
         brew doctor
+        chmod -R u+w "$(brew --prefix)"
         if [[ -d ~/Library/Caches/Homebrew ]]
         then
             echo 'Deleting ~/Library/Caches/Homebrew'
@@ -1344,6 +1473,8 @@ then
         patchpkgin
         mkbanner "patchpip"
         patchpip
+        mkbanner "patchgem"
+        patchgem
         mkbanner "patchcpan"
         patchcpan
         mkbanner "patchnpm"
