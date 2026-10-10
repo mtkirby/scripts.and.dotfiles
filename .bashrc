@@ -1,4 +1,4 @@
-# 20261009 Kirby
+# 20261010 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091
 
 ##################################################
@@ -34,7 +34,8 @@ for i in \
     /usr/local/sbin \
     $HOME/.local/bin \
     $HOME/bin \
-    $HOME/scripts
+    $HOME/scripts \
+    $HOME/perl5/bin 
 do
     [[ -d "$i" ]] && export PATH="${PATH:+${PATH}:}${i}"
 done
@@ -105,6 +106,14 @@ export EDITOR=vi
 if [[ -d /opt/homebrew ]]
 then
     eval "$(PATH=/usr/bin:/bin /opt/homebrew/bin/brew shellenv bash |grep -v 'export PATH=')"
+fi
+
+if [[ -d "${HOME}/perl5" ]]
+then
+    export PERL5LIB="${HOME}/perl5/lib/perl5${PERL5LIB:+:${PERL5LIB}}"
+    export PERL_LOCAL_LIB_ROOT="${HOME}/perl5${PERL_LOCAL_LIB_ROOT:+:${PERL_LOCAL_LIB_ROOT}}"
+    export PERL_MB_OPT="--install_base \"${HOME}/perl5\""
+    export PERL_MM_OPT="INSTALL_BASE=${HOME}/perl5"
 fi
 
 
@@ -766,73 +775,160 @@ function cpanhbinstall()
     fi
     rm -rf ~/.cpan/build >/dev/null 2>&1
     brew list xz >/dev/null 2>&1 || brew install -y xz
-    local prefix pbin xz
+    local prefix pbin xz LIBLZMA_INCLUDE LIBLZMA_LIB CFLAGS LDFLAGS
     prefix="$(brew --prefix)"
     pbin="$(brew --prefix perl)/bin"
-    local xz="$(brew --prefix xz)"
+    xz="$(brew --prefix xz)"
     PATH="$pbin:$PATH" \
-    local -x LIBLZMA_INCLUDE="$xz/include" \
-    local -x LIBLZMA_LIB="$xz/lib" \
-    local -x CFLAGS="-I$prefix/include" \
-    local -x LDFLAGS="-L$prefix/lib" \
+    LIBLZMA_INCLUDE="$xz/include" \
+    LIBLZMA_LIB="$xz/lib" \
+    CFLAGS="-I$prefix/include" \
+    LDFLAGS="-L$prefix/lib" \
     "$pbin/cpan" "$@"
 }
 
 ##################################################
+# Upgrade all outdated CPAN modules.
+#   Mac:            Homebrew perl
+#   Linux, Cygwin:  system perl (/usr/bin/perl)
+#   root (Cygwin: Administrators group) installs into perl's site dirs,
+#   everyone else installs into ~/perl5 (local::lib layout).
 function patchcpan()
 {
-    local pbin
-    if command -v brew >/dev/null 2>&1 && brew list perl >/dev/null 2>&1
+    local os perl pbin brewprefix is_root=0
+    os="$(uname -s 2>/dev/null)"
+
+    #case "$os" in
+    #    CYGWIN*|MSYS*|MINGW*) id -G | grep -qw 544 && is_root=1 ;;
+    #    *)                    [[ "$(id -u)" -eq 0 ]] && is_root=1 ;;
+    #esac
+    [[ "$(id -u)" -eq 0 ]] && is_root=1
+    case "$os" in
+        Darwin)
+            brewprefix="${HOMEBREW_PREFIX:-$(brew --prefix 2>/dev/null)}"
+            perl="$brewprefix/opt/perl/bin/perl"
+            if [[ -z "$brewprefix" ]] || [[ ! -x "$perl" ]]
+            then
+                echo "FAIL: brew perl not found (brew install perl)"
+                return 1
+            fi
+            ;;
+        *)
+            perl=/usr/bin/perl
+            [[ -x "$perl" ]] || perl="$(command -v perl 2>/dev/null)"
+            if [[ -z "$perl" ]]
+            then
+                echo "FAIL: perl not found"
+                return 1
+            fi
+            ;;
+    esac
+    pbin="$(dirname "$perl")"
+
+    if [[ ! -x "$pbin/cpan" ]]
     then
-        pbin="$(brew --prefix perl)/bin"
-    elif [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]
-    then
-        echo "FAIL: brew perl not found"
-        return 1
-    elif command -v cpan >/dev/null 2>&1
-    then
-        pbin="$(dirname "$(command -v cpan)")"
-    else
-        echo "FAIL: cpan not found"
+        echo "FAIL: $pbin/cpan not found"
+        if command -v dnf >/dev/null 2>&1
+        then
+            echo "      dnf install perl-CPAN"
+        elif command -v apt-get >/dev/null 2>&1
+        then
+            echo "      apt-get install perl"
+        elif [[ "$os" == CYGWIN* ]]
+        then
+            echo "      install the Cygwin perl package with setup"
+        fi
         return 1
     fi
-    if [[ ! -x "$pbin/cpan" ]] || [[ ! -x "$pbin/perl" ]]
+    if ! command -v make >/dev/null 2>&1
     then
-        echo "FAIL: cpan and perl not both found in $pbin"
+        echo "FAIL: make not found (needed to build modules)"
         return 1
     fi
-    echo "Using $pbin/cpan"
+
     local -x PATH="$pbin:$PATH"
     local -x PERL_MM_USE_DEFAULT=1
-    local xz="$(brew --prefix xz)"
-    local -x LIBLZMA_INCLUDE="$xz/include"
-    local -x LIBLZMA_LIB="$xz/lib"
-    local -x CFLAGS="-I$prefix/include"
-    local -x LDFLAGS="-L$prefix/lib"
-    local outdated
-    # shellcheck disable=SC2016 # $Config is perl, not shell
-    outdated="$("$pbin/perl" -MConfig -e 'print $Config{installsitebin}')/cpan-outdated"
+
+    local ll="$HOME/perl5"
+    if [[ "$is_root" == 1 ]]
+    then
+        echo "Running as root: installing into $perl site dirs"
+        # empty == unset to perl, and keeps the caller's values intact
+        local -x PERL5LIB="" PERL_LOCAL_LIB_ROOT="" PERL_MB_OPT="" PERL_MM_OPT=""
+    else
+        echo "Running as $(id -un): installing into $ll"
+        mkdir -p "$ll"
+        PATH="$ll/bin:$PATH"
+        local -x PERL5LIB="$ll/lib/perl5"
+        local -x PERL_LOCAL_LIB_ROOT="$ll"
+        local -x PERL_MB_OPT="--install_base \"$ll\""
+        local -x PERL_MM_OPT="INSTALL_BASE=$ll"
+    fi
+
+    if [[ -n "$brewprefix" ]]
+    then
+        if [[ -d "$brewprefix/opt/xz" ]]
+        then
+            local -x LIBLZMA_INCLUDE="$brewprefix/opt/xz/include"
+            local -x LIBLZMA_LIB="$brewprefix/opt/xz/lib"
+        fi
+        local -x CFLAGS="-I$brewprefix/include"
+        local -x LDFLAGS="-L$brewprefix/lib"
+    fi
+
+    echo "Using $pbin/cpan"
     "$pbin/cpan" CPAN App::cpanoutdated
+
+    local outdated="" dir dirs=()
+    [[ "$is_root" == 1 ]] || dirs+=("$ll/bin")
+    # shellcheck disable=SC2016 # $Config is perl, not shell
+    dirs+=("$("$perl" -MConfig -e 'print $Config{installsitescript}')" \
+           "$("$perl" -MConfig -e 'print $Config{installsitebin}')" \
+           "$pbin")
+    for dir in "${dirs[@]}"
+    do
+        if [[ -f "$dir/cpan-outdated" ]]
+        then
+            outdated="$dir/cpan-outdated"
+            break
+        fi
+    done
+    if [[ -z "$outdated" ]]
+    then
+        echo "FAIL: cpan-outdated not found after installing App::cpanoutdated"
+        return 1
+    fi
+
     "$pbin/cpan" -O
     "$pbin/cpan" -u
-    for mod in $("$pbin/perl" "$outdated" -p)
+    for mod in $("$perl" "$outdated" -p)
     do
         echo "#################### $mod"
-        LIBLZMA_INCLUDE="$(brew --prefix xz)/include" LIBLZMA_LIB="$(brew --prefix xz)/lib" CFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib" "$pbin/cpan" -f -i "$mod"
+        "$pbin/cpan" -f -i "$mod"
     done
-    for mod in $("$pbin/perl" "$outdated" --verbose |awk '{print $4}')
+    for mod in $("$perl" "$outdated" --verbose | awk '{print $4}')
     do
         echo "#################### $mod"
-        LIBLZMA_INCLUDE="$(brew --prefix xz)/include" LIBLZMA_LIB="$(brew --prefix xz)/lib" CFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib" "$pbin/cpan" -f -i "$mod"
+        "$pbin/cpan" -f -i "$mod"
     done
 
-    if [[ -d ~/.cpan/build ]]
+    # new XS DLLs under /usr need a rebase on Cygwin; this runs it at the next setup
+    if [[ "$os" == CYGWIN* ]] \
+    && command -v rebase-trigger >/dev/null 2>&1
     then
-        echo 'Deleting ~/.cpan/build'
-        rm -rf ~/.cpan/build >/dev/null 2>&1
+        rebase-trigger fullrebase
     fi
-    echo "######## cpan-oudated --verbose report"
-    "$pbin/perl" "$outdated" --verbose
+
+    for dir in ~/.cpan/build ~/.local/share/.cpan/build
+    do
+        if [[ -d "$dir" ]]
+        then
+            echo "Deleting $dir"
+            rm -rf "$dir" >/dev/null 2>&1
+        fi
+    done
+    echo "######## cpan-outdated --verbose report"
+    "$perl" "$outdated" --verbose
     echo "######################################"
 }
 
