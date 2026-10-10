@@ -538,8 +538,6 @@ alias pdb="python -m pdb"
 # debug in VS: debugpy --listen 5678 myscript.py
 alias debugpy="python -m debugpy"
 
-[[ -e ~/myvenv/bin/activate ]] && . ~/myvenv/bin/activate
-
 
 ##################################################
 function dogitps()
