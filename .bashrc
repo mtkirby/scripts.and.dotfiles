@@ -1920,6 +1920,7 @@ fi
 ##################################################
 if uname -s 2>/dev/null|grep -q BSD
 then
+    alias psa='ps -axwww -o user,pid,ppid,%cpu,%mem,vsz,rss,tt,stat,start,etime,time,command'
     alias free="top -d1 |grep -E '^Mem:|^Memory:'|head -1"
     alias patchfreebsd='sudo pkg update; echo -e "y\ny\n" |sudo pkg upgrade'
     alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
