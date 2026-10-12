@@ -665,7 +665,17 @@ function dnstxtwrap() {
 ##################################################
 function dnstxt2txt()
 {
-    host -t TXT "$1" ${2:+"$2"} |grep -v ':' |sed -e 's/^[^"]*"//' |tr -d '" ' |base64 -d |gzip -d
+    if ! command -v base64 >/dev/null 2>&1
+    then
+        echo "FAIL: base64 not found" >&2
+        return 1
+    fi
+    host -t TXT "$1" ${2:+"$2"} \
+        |grep -v ':' \
+        |sed -e 's/^[^"]*"//' \
+        |tr -d '" ' \
+        |base64 -d \
+        |gzip -d
 }
 
 ##################################################
@@ -732,7 +742,8 @@ function patchgem()
         echo "FAIL: no gem installed"
         return 1
     fi
-    if brew --prefix ruby >/dev/null 2>&1
+    if brew --prefix ruby >/dev/null 2>&1 \
+    && [[ -d "$(brew --prefix ruby)" ]] 
     then
         echo "chmod'ing u+w ruby dir"
         chmod -R u+w "$(brew --prefix ruby)" /opt/homebrew/Cellar/ruby
@@ -976,9 +987,25 @@ function patchapt()
 }
 
 ##################################################
-alias patchpkgin='sudo pkgin update; echo y|sudo pkgin upgrade'
-alias patchhaiku='pkgman refresh; pkgman update -y; pkgman full-sync'
-alias patchminix='pkgin update; pkgin -y full-upgrade'
+function patchpkgin()
+{
+    if command -v pkgin >/dev/null 2>&1
+    then
+        sudo pkgin update
+        echo y|sudo pkgin upgrade
+    else
+        echo "FAIL: pkgin not found"
+        return 1
+    fi
+}
+
+##################################################
+function patchhaiku()
+{
+    pkgman refresh
+    pkgman update -y
+    pkgman full-sync
+}
 
 ##################################################
 function patchdnf()
@@ -1206,7 +1233,7 @@ function tferaws()
     local res
 
     if [[ -n "$1" ]]
-   	then
+       then
         accountname="$1"
     else
         echo "FAIL: must provide account name as arg 1"
@@ -1214,19 +1241,19 @@ function tferaws()
     fi
 
     if [[ -z "$AWS_REGION" ]]
-   	then
+       then
         echo "FAIL: AWS_REGION is not set"
         return 1
     fi
 
     if [[ -z "$AWS_PROFILE" ]]
-   	then
+       then
         echo "FAIL: AWS_PROFILE is not set"
         return 1
     fi
 
-    for res in $(terraformer import aws list)
-   	do
+    for res in $(terraformer import aws list |grep -v identitystore)
+       do
       terraformer import aws \
         --resources="${res}" \
         --regions="${AWS_REGION}" \
@@ -1244,7 +1271,7 @@ function tferazure()
     local res
 
     if [[ -n "$1" ]]
-   	then
+       then
       accountname="$1"
     else
       echo "FAIL: must provide account name as arg 1"
@@ -1255,7 +1282,7 @@ function tferazure()
     subscription_name="$(az account show --query name -o tsv)"
 
     if [[ -z "$subscription_id" ]]
-   	then
+       then
       echo "FAIL: unable to determine active Azure subscription"
       return 1
     fi
@@ -1263,7 +1290,7 @@ function tferazure()
     export ARM_SUBSCRIPTION_ID="$subscription_id"
 
     for res in $(terraformer import azure list)
-   	do
+       do
       terraformer import azure \
         --resources="${res}" \
         --path-pattern="${accountname}/${subscription_name}/${res}"
@@ -1278,7 +1305,7 @@ function tferk8s()
     context="$(kubectl config current-context)"
 
     if [[ -z "$context" ]]
-   	then
+       then
       echo "FAIL: unable to determine current Kubernetes context"
       return 1
     fi
@@ -1287,7 +1314,7 @@ function tferk8s()
     export KUBE_CTX="$context"
 
     for res in $(terraformer import kubernetes list)
-   	do
+       do
       terraformer import kubernetes \
         --resources="${res}" \
         --path-pattern="${context}/${res}"
@@ -1403,7 +1430,10 @@ function mysysinfo()
             ;;
         OpenBSD|NetBSD)
             cpu="$(sysctl -n hw.model 2>/dev/null)"
-            memtotal="$(sysctl -n hw.physmem64 2>/dev/null || sysctl -n hw.physmem 2>/dev/null)"
+            # NetBSD's 64-bit total is hw.physmem64; OpenBSD's is hw.physmem, and its
+            # sysctl exits 0 on unknown names, so test the output, not the status
+            memtotal="$(sysctl -n hw.physmem64 2>/dev/null)"
+            [[ -n "$memtotal" ]] || memtotal="$(sysctl -n hw.physmem 2>/dev/null)"
             memavail="$(vmstat -s 2>/dev/null | awk '
                 /bytes per page/ { ps = $1 } /pages free$/ { f = $1 } /pages inactive$/ { i = $1 }
                 END { printf "%.0f\n", (f + i) * ps }')"
@@ -1653,8 +1683,8 @@ then
     }
 
     ##
-	function patchwinvs()
-	{
+    function patchwinvs()
+    {
         local extdir obsolete ext
         extdir="/cygdrive/c/users/$(whoami)/.vscode/extensions"
         obsolete="$extdir/.obsolete"
@@ -1667,7 +1697,7 @@ then
 
         # Update extensions
         /cygdrive/c/'Program Files'/'Microsoft VS Code'/bin/code \
-		   	--update-extensions || return 1
+               --update-extensions || return 1
 
         # Remove obsolete extensions
         if [[ -f "$obsolete" ]]
@@ -1890,8 +1920,8 @@ fi
 ##################################################
 if uname -s 2>/dev/null|grep -q BSD
 then
-    alias free="top -d1 |grep -E '^Mem:'"
-    alias patchfreebsd='sudo pkg update; echo y|sudo pkg upgrade'
+    alias free="top -d1 |grep -E '^Mem:|^Memory:'|head -1"
+    alias patchfreebsd='sudo pkg update; echo -e "y\ny\n" |sudo pkg upgrade'
     alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
 fi
 
@@ -1919,7 +1949,7 @@ then
         export PATH="${PATH}:${i}"
     done
     IFS=$' \t\n'
-	command -v MacVim >/dev/null 2>&1 && alias gvim=MacVim
+    command -v MacVim >/dev/null 2>&1 && alias gvim=MacVim
 
     ##
     function patchmac()
@@ -1975,8 +2005,8 @@ then
     }
 
     ##
-	function patchmacvs()
-	{
+    function patchmacvs()
+    {
         local extdir="$HOME/.vscode/extensions"
         local obsolete="$extdir/.obsolete"
         local isrunning=0
@@ -1988,7 +2018,7 @@ then
 
         # Update extensions
         /Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin/code \
-		   	--update-extensions || return 1
+               --update-extensions || return 1
 
         # Gracefully quit VS Code
         osascript -e 'tell application "Visual Studio Code" to quit' || return 1
@@ -2026,7 +2056,7 @@ then
     function mymacpatchall()
     {
         mkbanner "patchmacvs"
-		patchmacvs 2>&1 |tee /tmp/patchmacvs.log
+        patchmacvs 2>&1 |tee /tmp/patchmacvs.log
         mkbanner "patchmac"
         patchmac 2>&1 |tee /tmp/patchmac.log
         mkbanner "patchhomebrew"
