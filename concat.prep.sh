@@ -32,5 +32,5 @@ done
 #    fi
 #done
 rmdir * >/dev/null 2>&1
-mkbanner "dirs"
+echo "######################### dirs"
 find . -type d
