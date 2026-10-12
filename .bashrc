@@ -1,4 +1,4 @@
-# 20261010 Kirby
+# 20261012 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -81,6 +81,35 @@ export LD_LIBRARY_PATH=$newldpath
 ##################################################
 export USER=${USER:-$LOGNAME}
 
+if [[ "$USER" == "root" ]] \
+|| [[ "$USER" == "Administrator" ]]
+then
+    umask 022
+else
+    umask 077
+fi
+
+export VISUAL=vi
+export EDITOR=vi
+
+if [[ -d /opt/homebrew ]]
+then
+    eval "$(PATH=/usr/bin:/bin /opt/homebrew/bin/brew shellenv bash |grep -v 'export PATH=')"
+fi
+
+if [[ -d "${HOME}/perl5" ]]
+then
+    export PERL5LIB="${HOME}/perl5/lib/perl5${PERL5LIB:+:${PERL5LIB}}"
+    export PERL_LOCAL_LIB_ROOT="${HOME}/perl5${PERL_LOCAL_LIB_ROOT:+:${PERL_LOCAL_LIB_ROOT}}"
+    export PERL_MB_OPT="--install_base \"${HOME}/perl5\""
+    export PERL_MM_OPT="INSTALL_BASE=${HOME}/perl5"
+fi
+
+##################################################
+# Non-interactive shells (ssh host cmd, scp, rsync) only need the environment above
+[[ $- == *i* ]] || return
+
+##################################################
 if command -v bat >/dev/null 2>&1
 then
     if command -v less >/dev/null 2>&1
@@ -100,22 +129,6 @@ then
         export BAT_THEME='ansi'
     fi
 fi
-export VISUAL=vi
-export EDITOR=vi
-
-if [[ -d /opt/homebrew ]]
-then
-    eval "$(PATH=/usr/bin:/bin /opt/homebrew/bin/brew shellenv bash |grep -v 'export PATH=')"
-fi
-
-if [[ -d "${HOME}/perl5" ]]
-then
-    export PERL5LIB="${HOME}/perl5/lib/perl5${PERL5LIB:+:${PERL5LIB}}"
-    export PERL_LOCAL_LIB_ROOT="${HOME}/perl5${PERL_LOCAL_LIB_ROOT:+:${PERL_LOCAL_LIB_ROOT}}"
-    export PERL_MB_OPT="--install_base \"${HOME}/perl5\""
-    export PERL_MM_OPT="INSTALL_BASE=${HOME}/perl5"
-fi
-
 
 ##################################################
 # SHELL OPTS
@@ -202,16 +215,6 @@ export HISTCONTROL=ignoredups:erasedups:ignorespace
 shopt -s histappend
 shopt -s histverify
 shopt -s cmdhist
-
-
-##################################################
-if [[ "$USER" == "root" ]] \
-|| [[ "$USER" == "Administrator" ]] 
-then
-    umask 022
-else
-    umask 077
-fi
 
 ##################################################
 # PROMPT
@@ -973,7 +976,7 @@ function patchapt()
 }
 
 ##################################################
-alias patchpkgin='sudo /opt/pkg/bin/pkgin update; echo y|sudo /opt/pkg/bin/pkgin upgrade'
+alias patchpkgin='sudo pkgin update; echo y|sudo pkgin upgrade'
 alias patchhaiku='pkgman refresh; pkgman update -y; pkgman full-sync'
 alias patchminix='pkgin update; pkgin -y full-upgrade'
 
@@ -994,6 +997,116 @@ function patchdnf()
     command -v rpmconf >/dev/null 2>&1 || dnf install -y rpmconf
     rpmconf -a
     dnf needs-restarting
+}
+
+##################################################
+function myunixclam()
+{
+    local freshclam clamscan confdir conf db log hint t
+    local -a asroot=(sudo) targets paths
+
+    case "$(uname -s 2>/dev/null)" in
+        FreeBSD) hint="sudo pkg install -y clamav" ;;
+        SunOS)   hint="sudo pkg install antivirus/clamav" ;;
+        Linux)
+            if command -v apt-get >/dev/null 2>&1
+            then
+                hint="sudo apt-get install -y clamav clamav-freshclam"
+            else
+                hint="sudo dnf install -y clamav clamav-update"
+            fi
+            ;;
+        *)
+            echo "FAIL: myunixclam is for FreeBSD, OpenIndiana, Fedora, and Ubuntu"
+            return 1
+            ;;
+    esac
+
+    freshclam="$(command -v freshclam)"
+    clamscan="$(command -v clamscan)"
+    if [[ -z "$freshclam" || -z "$clamscan" ]]
+    then
+        echo "FAIL: NO CLAMAV: RUN $hint"
+        return 1
+    fi
+    (( EUID == 0 )) && asroot=()
+
+    # Ask ClamAV which config dir it was built with, since every OS differs
+    confdir="$(clamconf 2>/dev/null | awk '/^Checking configuration files in/ {print $NF; exit}')"
+    if [[ -z "$confdir" ]]
+    then
+        for t in /etc/clamav /etc /usr/local/etc
+        do
+            [[ -e "$t/freshclam.conf" ]] && { confdir="$t"; break; }
+        done
+    fi
+    if [[ -z "$confdir" ]]
+    then
+        echo "FAIL: can't find the ClamAV config directory"
+        return 1
+    fi
+    conf="$confdir/freshclam.conf"
+    if [[ ! -s "$conf" ]]
+    then
+      # Leave paths and DatabaseOwner to this build's defaults
+      "${asroot[@]}" tee "$conf" >/dev/null <<EOF
+DatabaseMirror    database.clamav.net
+MaxAttempts       5
+CompressLocalDatabase no
+EOF
+    fi
+    perl -pi -e 's/^Example//' "$conf"
+    if grep -q '^Example' "$conf"
+    then
+        echo "FAIL: comment out the Example line in $conf"
+        return 1
+    fi
+
+    # clamscan doesn't read freshclam.conf, so pass it the database freshclam updates
+    db="$(clamconf 2>/dev/null | awk -F'"' '/^Config file:/ { f = ($0 ~ /freshclam/) } f && /^DatabaseDirectory = / { print $2; exit }')"
+
+    # A running freshclam daemon holds the update lock and keeps the database current
+    if pgrep -x freshclam >/dev/null 2>&1
+    then
+        echo "SKIPPING freshclam.  The freshclam daemon is already updating the database"
+    else
+        "${asroot[@]}" nice "$freshclam" --show-progress -v
+    fi
+
+    targets=(
+        ${VIRTUAL_ENV:+"$VIRTUAL_ENV"}
+        "${HOME}"/Downloads
+        "${HOME}"/Documents
+        "${HOME}"/.cpan
+        "${HOME}"/.local
+        "${HOME}"/.npm
+        "${HOME}"/.vscode
+        "${HOME}"/.vscode-server
+        "${HOME}"/.mozilla/firefox/*/extensions
+        "${HOME}"/snap/firefox/common/.mozilla/firefox/*/extensions
+        "${HOME}"/.var/app/org.mozilla.firefox/.mozilla/firefox/*/extensions
+    )
+    for t in "${targets[@]}"
+    do
+        [[ -e "$t" ]] && paths+=("$t")
+    done
+    if (( ${#paths[@]} == 0 ))
+    then
+        echo "FAIL: nothing to scan"
+        return 1
+    fi
+
+    log="${HOME}/.cache/clamscan.log"
+    mkdir -p "${HOME}/.cache" || return 1
+    # Rootless podman storage is huge and mostly unreadable by its owner
+    nice "$clamscan" -r -i \
+        ${db:+--database="$db"} \
+        --detect-pua=no \
+        --fail-if-cvd-older-than=7 \
+        --exclude-dir="^$HOME/\.local/share/containers" \
+        --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
+        --log="$log" \
+        "${paths[@]}"
 }
 
 
@@ -1227,8 +1340,195 @@ function mkbanner()
 
     printf '%*s' $printnum ' '|tr ' ' "$chars" 
     echo -n "  $display  "
-    printf '%*s' $printnum ' '|tr ' ' "$chars" 
+    printf '%*s' $printnum ' '|tr ' ' "$chars"
     echo ''
+}
+
+##################################################
+function mysysinfo()
+{
+    local lbl=$'\e[96;1m' dim=$'\e[2m' rst=$'\e[0m'
+    local os kernel arch cpu cores ncpu load up s secs boot b k
+    local memtotal memavail dfopt ro l1 l5 l15
+    local reg='/proc/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows NT/CurrentVersion'
+    local -a info words
+
+    printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '-'
+
+    kernel="$(uname -sr 2>/dev/null)"
+    arch="$(uname -m 2>/dev/null)"
+    case "$(uname -s 2>/dev/null)" in
+        Linux|CYGWIN*)
+            if [[ -d "$reg" ]]
+            then
+                os="$(tr -d '\0' <"$reg/ProductName" 2>/dev/null)"
+                b="$(tr -d '\0' <"$reg/CurrentBuild" 2>/dev/null)"
+                # Windows 11 still reports its ProductName as Windows 10
+                (( ${b:-0} >= 22000 )) && os="${os/Windows 10/Windows 11}"
+                os="$os $(tr -d '\0' <"$reg/DisplayVersion" 2>/dev/null) (build $b)"
+            else
+                os="$(awk '/^PRETTY_NAME=/ { v = substr($0, 13); gsub(/"/, "", v); print v }' /etc/os-release 2>/dev/null)"
+            fi
+            cpu="$(awk -F': *' '/^model name/ { print $2; exit }' /proc/cpuinfo 2>/dev/null)"
+            # ARM's /proc/cpuinfo has no model name
+            [[ -z "$cpu" ]] && cpu="$(lscpu 2>/dev/null | awk -F': *' '/^Model name/ { print $2; exit }')"
+            read -r memtotal memavail < <(awk '
+                /^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } /^MemFree:/ { f = $2 }
+                END { if (!a) a = f; printf "%.0f %.0f\n", t * 1024, a * 1024 }' /proc/meminfo 2>/dev/null)
+            ;;
+        Darwin)
+            os="$(sw_vers 2>/dev/null | awk -F':[ \t]*' '
+                /ProductName/ { n = $2 } /ProductVersion/ { v = $2 } /BuildVersion/ { b = $2 }
+                END { print n " " v " (" b ")" }')"
+            cpu="$(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
+            if [[ "$(sysctl -n hw.nperflevels 2>/dev/null)" == 2 ]]
+            then
+                cores="($(sysctl -n hw.perflevel0.logicalcpu)P+$(sysctl -n hw.perflevel1.logicalcpu)E)"
+            fi
+            memtotal="$(sysctl -n hw.memsize 2>/dev/null)"
+            # Same "available" as the Mac free(): free + file cache + purgeable
+            memavail="$(vm_stat 2>/dev/null | awk '
+                NR == 1 { match($0, /page size of [0-9]+/); ps = substr($0, RSTART + 13, RLENGTH - 13); next }
+                { split($0, kv, ":"); v = kv[2]; gsub(/[^0-9]/, "", v); p[kv[1]] = v }
+                END { printf "%.0f\n", (p["Pages free"] + p["File-backed pages"] + p["Pages purgeable"]) * ps }')"
+            ;;
+        FreeBSD)
+            os="$(freebsd-version 2>/dev/null)"
+            os="${os:+FreeBSD $os}"
+            cpu="$(sysctl -n hw.model 2>/dev/null)"
+            read -r memtotal memavail < <(sysctl -n hw.physmem hw.pagesize \
+                vm.stats.vm.v_free_count vm.stats.vm.v_inactive_count 2>/dev/null |
+                awk '{ v[NR] = $1 } END { printf "%.0f %.0f\n", v[1], (v[3] + v[4]) * v[2] }')
+            ;;
+        OpenBSD|NetBSD)
+            cpu="$(sysctl -n hw.model 2>/dev/null)"
+            memtotal="$(sysctl -n hw.physmem64 2>/dev/null || sysctl -n hw.physmem 2>/dev/null)"
+            memavail="$(vmstat -s 2>/dev/null | awk '
+                /bytes per page/ { ps = $1 } /pages free$/ { f = $1 } /pages inactive$/ { i = $1 }
+                END { printf "%.0f\n", (f + i) * ps }')"
+            ;;
+        SunOS)
+            os="$(awk '{ sub(/^[ \t]+/, ""); print; exit }' /etc/release 2>/dev/null)"
+            cpu="$(psrinfo -pv 2>/dev/null | awk '{ l = $0 } END { sub(/^[ \t]+/, "", l); print l }')"
+            read -r memtotal memavail < <(kstat -p unix:0:system_pages:physmem \
+                unix:0:system_pages:freemem 2>/dev/null |
+                awk -v ps="$(pagesize 2>/dev/null)" '
+                    /physmem/ { t = $2 } /freemem/ { f = $2 }
+                    END { printf "%.0f %.0f\n", t * ps, f * ps }')
+            boot="$(kstat -p unix:0:system_misc:boot_time 2>/dev/null | awk '{ print $2 }')"
+            ;;
+    esac
+
+    if [[ -z "$os" || "$os" == "$kernel" ]]
+    then
+        os="$kernel, $arch"
+    else
+        os="$os, $kernel, $arch"
+    fi
+    read -ra words <<<"${cpu:-$(uname -p 2>/dev/null)}"
+    cpu="${words[*]}"
+    ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
+    ncpu="${ncpu:-${PSCPUCOUNT#/}}"
+
+    if [[ -r /proc/loadavg ]]
+    then
+        read -r l1 l5 l15 _ </proc/loadavg
+        load="$l1 $l5 $l15"
+    else
+        s="$(uptime 2>/dev/null)"
+        load="${s##*load average*: }"
+        load="${load//,/}"
+    fi
+
+    if [[ -r /proc/uptime ]]
+    then
+        read -r secs _ </proc/uptime
+        secs="${secs%.*}"
+    else
+        [[ -z "$boot" ]] && boot="$(sysctl -n kern.boottime 2>/dev/null)"
+        # macOS and FreeBSD print "{ sec = N, usec = N } date", OpenBSD prints N
+        [[ "$boot" =~ sec\ =\ ([0-9]+) ]] && boot="${BASH_REMATCH[1]}"
+        [[ "$boot" =~ ^[0-9]+$ ]] && secs=$(( ${EPOCHSECONDS:-$(date +%s)} - boot ))
+    fi
+    if [[ -n "$secs" ]]
+    then
+        up="$((secs / 86400))d $((secs % 86400 / 3600))h $((secs % 3600 / 60))m"
+        up="${up#0d }"
+    else
+        s="$(uptime 2>/dev/null)"
+        up="${s#*up }"
+        up="${up%,*user*}"
+        up="${up%,*load*}"
+    fi
+
+    info=(
+        Host   "$HOSTNAME"
+        User   "$USER (uid $UID)"
+        OS     "$os"
+        CPU    "$cpu, $ncpu cpus${cores:+ $cores}"
+        Load   "$load (1, 5, 15 min)"
+        Uptime "$up"
+    )
+    for (( k = 0; k < ${#info[@]}; k += 2 ))
+    do
+        printf '  %s%-7s%s %s\n' "$lbl" "${info[k]}" "$rst" "${info[k+1]}"
+    done
+
+    # -l keeps df off network mounts, which can hang a new shell
+    if df -Plk / >/dev/null 2>&1
+    then
+        dfopt=-Plk
+    else
+        dfopt=-lk
+    fi
+    # Read-only mounts (disk images, ISOs) always look full, so skip them
+    ro="$(mount 2>/dev/null | awk '/[(, ](ro|read-only)[,)]/ {
+        sub(/^[^ ]+ on /, ""); sub(/ type [^ ]+ \(.*$/, ""); sub(/ \([^()]*\)$/, "")
+        printf "%s|", $0 }')"
+    printf '  %s%-22s %7s %7s %7s %5s%s\n' "$dim" "" size used avail use "$rst"
+    {
+        [[ "${memtotal:-0}" -gt 0 ]] \
+            && echo "Memory|$memtotal|$(( memtotal - memavail ))|$memavail"
+        df "$dfopt" 2>/dev/null | awk -v ro="|$ro" '
+            NR == 1 { next }
+            {
+                dev = $1; mnt = $6
+                for (i = 7; i <= NF; i++) mnt = mnt " " $i
+                if (mnt != "/" && index(ro, "|" mnt "|")) next
+                if (dev ~ /^[A-Za-z]:/) {
+                    # Cygwin and WSL drive letters: show each drive once
+                    if (mnt !~ /^\/(cygdrive|mnt)\//) next
+                    dev = toupper(substr(dev, 1, 1))
+                } else if (mnt != "/" && (dev !~ /^\/dev\// || dev ~ /^\/dev\/loop/)) next
+                # macOS APFS helper volumes and Xcode simulator runtimes
+                if (mnt ~ /^\/System\/Volumes\// && mnt != "/System/Volumes/Data") next
+                if (mnt ~ /^\/Library\/Developer\/CoreSimulator\//) next
+                if (seen[dev]++) next
+                printf "%s|%.0f|%.0f|%.0f\n", mnt, $2 * 1024, $3 * 1024, $4 * 1024
+            }'
+        # ZFS datasets share their pool, so report pools instead
+        command -v zpool >/dev/null 2>&1 \
+            && zpool list -Hp -o name,size,alloc,free 2>/dev/null \
+            | awk -F'\t' '{ printf "pool %s|%s|%s|%s\n", $1, $2, $3, $4 }'
+    } | awk -F'|' '
+        function h(b,  u, i) {
+            split("B K M G T P", u, " ")
+            for (i = 1; b >= 1024 && i < 6; i++) b /= 1024
+            return sprintf((i > 1 && b < 10) ? "%.1f%s" : "%.0f%s", b, u[i])
+        }
+        function bar(p,  n, i, s) {
+            n = int(p / 5 + 0.5)
+            s = "\033[" (p >= 90 ? 31 : p >= 70 ? 33 : 32) "m"
+            for (i = 1; i <= 20; i++) s = s (i <= n ? "#" : i == n + 1 ? "\033[2m." : ".")
+            return "[" s "\033[0m]"
+        }
+        NF == 4 {
+            name = length($1) > 22 ? "..." substr($1, length($1) - 18) : $1
+            p = ($3 + $4) > 0 ? $3 * 100 / ($3 + $4) : 0
+            printf "  %-22s %7s %7s %7s %4d%%  %s\n", name, h($2), h($3), h($4), p, bar(p)
+        }'
+    printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '-'
+    return 0
 }
 
 ##################################################
@@ -1291,7 +1591,7 @@ then
                 if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
                 then
                     echo "Removing obsolete extension: $ext"
-                    rm -rf -- "$extdir/$ext"
+                    rm -rf -- "${extdir:?}/${ext:?}"
                 fi
             done
         fi
@@ -1321,6 +1621,8 @@ then
         patchcpan 2>&1 |tee /tmp/patchcpan.log
         mkbanner "patchnpm"
         patchnpm 2>&1 |tee /tmp/patchnpm.log
+        mkbanner "mywinclam"
+        mywinclam 2>&1 |tee /tmp/mywinclam.log
         mkbanner "windiskclean"
         windiskclean 2>&1 |tee /tmp/windiskclean.log
         mkbanner "windiskdefrag"
@@ -1404,6 +1706,77 @@ then
         else
           sdelete -accepteula -z c:
         fi
+    }
+
+    ##
+    function mywinclam()
+    {
+        if ! id -G | grep -qw 544
+        then
+          echo "FAIL: run Cygwin as Administrator"
+          return 1
+        fi
+        local clamdir conf data wdata db winhome t
+        local -a targets paths
+        clamdir="$(printf '%s\n' /cygdrive/c/ProgramData/chocolatey/lib/clamav/tools/clamav-*.win.x64 | sort -V | tail -1)"
+        if [[ ! -x "$clamdir/freshclam.exe" || ! -x "$clamdir/clamscan.exe" ]]
+        then
+            echo "FAIL: NO CLAMAV: RUN choco install -y clamav"
+            return 1
+        fi
+        conf="$clamdir/freshclam.conf"
+        # Database and logs live outside the versioned choco dir so upgrades keep them
+        data=/cygdrive/c/ProgramData/clamav
+        mkdir -p "$data/database" "$data/log" || return 1
+        wdata="$(cygpath -w "$data")"
+        if [[ ! -s "$conf" ]]
+        then
+          cat >"$conf" <<EOF
+DatabaseDirectory $wdata\database
+CVDCertsDirectory $(cygpath -w "$clamdir")\certs
+UpdateLogFile     $wdata\log\freshclam.log
+LogTime           yes
+LogVerbose        yes
+LogRotate         yes
+DatabaseMirror    database.clamav.net
+MaxAttempts       5
+CompressLocalDatabase no
+EOF
+        fi
+        # clamscan doesn't read freshclam.conf, so pass it the same database
+        db="$(awk '$1 == "DatabaseDirectory" { sub(/^[ \t]*DatabaseDirectory[ \t]+/, ""); sub(/[ \t\r]+$/, ""); print }' "$conf")"
+
+        winhome="/cygdrive/c/users/$(whoami)"
+        targets=(
+            ${VIRTUAL_ENV:+"$VIRTUAL_ENV"}
+            "$winhome"/Downloads
+            "$winhome"/Documents
+            "$winhome"/.vscode
+            "$winhome"/AppData/Roaming/Mozilla/Firefox/Profiles/*/extensions
+            "${HOME}"/.cpan
+            "${HOME}"/.local
+            "${HOME}"/.npm
+        )
+        # clamscan.exe is a Windows program, so it needs Windows paths
+        for t in "${targets[@]}"
+        do
+            [[ -e "$t" ]] && paths+=("$(cygpath -w "$t")")
+        done
+        if (( ${#paths[@]} == 0 ))
+        then
+            echo "FAIL: nothing to scan"
+            return 1
+        fi
+
+        nice "$clamdir/freshclam.exe" --config-file="$(cygpath -w "$conf")" --show-progress -v
+        nice "$clamdir/clamscan.exe" -r -i \
+            ${db:+--database="$db"} \
+            --detect-pua=no \
+            --fail-if-cvd-older-than=7 \
+            --exclude-dir='[\\/]OneDrive' \
+            --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
+            --log="$wdata\\log\\clamscan.log" \
+            "${paths[@]}"
     }
 
     ##
@@ -1548,7 +1921,7 @@ then
                 if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
                 then
                     echo "Removing obsolete extension: $ext"
-                    rm -rf -- "$extdir/$ext"
+                    rm -rf -- "${extdir:?}/${ext:?}"
                 fi
             done
         fi
@@ -1614,7 +1987,7 @@ EOF
             --exclude-dir="^$HOME/Library/(CloudStorage|Mobile Documents|Caches)" \
             --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
             --log="$prefix/var/log/clamscan.log" \
-            "${VIRTUAL_ENV}" \
+            ${VIRTUAL_ENV:+"$VIRTUAL_ENV"} \
             "${HOME}"/Downloads \
             "${HOME}"/Documents \
             "${HOME}"/.cpan \
@@ -1692,6 +2065,10 @@ fi
 ##################################################
 [[ -e /etc/bashrc.mk.local ]] && . /etc/bashrc.mk.local
 [[ -e ~/bashrc.mk.local ]] && . ~/bashrc.mk.local
+
+##################################################
+# Only in interactive terminals, so scp, rsync and "ssh host cmd" stay silent
+[[ $- == *i* && -t 1 ]] && mysysinfo
 
 ##################################################
 true

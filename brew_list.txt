@@ -218,6 +218,7 @@ lmdb
 localstack-cli
 lstk
 lua
+lynis
 lynx
 lz4
 lzo
@@ -294,6 +295,7 @@ pylint
 python-packaging
 python-setuptools
 python@3.14
+python@3.15
 rclone
 rdap
 readline
@@ -358,6 +360,7 @@ unar
 unbound
 unixodbc
 unzip
+upscayl
 util-linux
 uvwasi
 vim
