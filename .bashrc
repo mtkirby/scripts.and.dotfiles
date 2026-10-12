@@ -1349,7 +1349,7 @@ function mysysinfo()
 {
     local lbl=$'\e[96;1m' dim=$'\e[2m' rst=$'\e[0m'
     local os kernel arch cpu cores ncpu load up s secs boot b k
-    local memtotal memavail dfopt ro l1 l5 l15
+    local memtotal memavail dfopt ro l1 l5 l15 sys n v
     local reg='/proc/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows NT/CurrentVersion'
     local -a info words
 
@@ -1357,7 +1357,8 @@ function mysysinfo()
 
     kernel="$(uname -sr 2>/dev/null)"
     arch="$(uname -m 2>/dev/null)"
-    case "$(uname -s 2>/dev/null)" in
+    sys="$(uname -s 2>/dev/null)"
+    case "$sys" in
         Linux|CYGWIN*)
             if [[ -d "$reg" ]]
             then
@@ -1469,6 +1470,96 @@ function mysysinfo()
         Load   "$load (1, 5, 15 min)"
         Uptime "$up"
     )
+
+    # Each source emits "A|iface|addr[/len]|netmask" and "R|gateway|iface";
+    # temporary and deprecated IPv6 addresses are dropped at the source
+    while IFS='|' read -r n v
+    do
+        info+=("$n" "$v")
+    done < <(
+        if [[ "$sys" == CYGWIN* ]]
+        then
+            # English ipconfig only; "Default Gateway" may continue on the next lines
+            ipconfig 2>/dev/null | awk '
+                { sub(/\r$/, "") }
+                /^[^ \t]/ { ifc = $0; sub(/^.* adapter /, "", ifc); sub(/:$/, "", ifc); gw = 0; next }
+                / : / { gw = 0; v = $0; sub(/^[^:]*: */, "", v) }
+                !/ : / { v = $0 }
+                { gsub(/^ +| +$/, "", v); sub(/\(.*/, "", v) }
+                /IPv4 Address/ { a = v }
+                /IPv6 Address/ && !/Temporary|Link-local/ { print "A|" ifc "|" v }
+                /Subnet Mask/ && a != "" { print "A|" ifc "|" a "|" v; a = "" }
+                /Default Gateway/ { gw = 1 }
+                gw && v ~ /^[0-9]+\.[0-9.]+$/ && !r++ { print "R|" v "|" ifc }'
+        elif [[ "$sys" == Linux ]] && command -v ip >/dev/null 2>&1
+        then
+            ip -o addr show 2>/dev/null | awk '
+                / temporary| deprecated/ { next }
+                {
+                    ifc = $2; sub(/@.*/, "", ifc); a = $4
+                    # Point-to-point: "inet 10.8.0.2 peer 10.8.0.1/32"
+                    if (a !~ /\// && $5 == "peer") { p = $6; sub(/^[^\/]*/, "", p); a = a p }
+                    print "A|" ifc "|" a
+                }'
+            ip route show default 2>/dev/null | awk 'NR == 1 {
+                for (i = 1; i < NF; i++) { if ($i == "via") g = $(i + 1); if ($i == "dev") d = $(i + 1) }
+                print "R|" g "|" d }'
+        else
+            # BSD/macOS/Solaris/net-tools ifconfig: hex, dotted or "Mask:" netmasks,
+            # "prefixlen N", or the length already on the address
+            ifconfig -a 2>/dev/null | awk '
+                /^[^ \t]/ { ifc = $1; sub(/:$/, "", ifc) }
+                $1 == "inet" || $1 == "inet6" {
+                    a = $2; m = ""
+                    if (a == "addr:") a = $3
+                    sub(/^addr:/, "", a)
+                    for (i = 3; i <= NF; i++) {
+                        if ($i == "netmask") m = $(i + 1)
+                        else if ($i ~ /^Mask:/) m = substr($i, 6)
+                        else if ($i == "prefixlen") a = a "/" $(i + 1)
+                        else if ($i == "temporary" || $i == "deprecated") next
+                    }
+                    sub(/%[^\/]*/, "", a)
+                    print "A|" ifc "|" a "|" m
+                }'
+            { route -n get default 2>/dev/null || netstat -rn 2>/dev/null; } | awk '
+                $1 == "gateway:" { g = $2 } $1 == "interface:" { d = $2 }
+                ($1 == "default" || $1 == "0.0.0.0") && g d == "" { g = $2; d = $NF }
+                END { if (g d != "") print "R|" g "|" d }'
+        fi | awk -F'|' '
+            function bits(m,  n, i, v, o) {
+                if (m ~ /\./) {
+                    split(m, o, ".")
+                    for (i = 1; i <= 4; i++) for (v = o[i] + 0; v > 0; v = int(v / 2)) n += v % 2
+                } else {
+                    sub(/^0x/, "", m); m = tolower(m)
+                    for (i = 1; i <= length(m); i++)
+                        for (v = index("0123456789abcdef", substr(m, i, 1)) - 1; v > 0; v = int(v / 2)) n += v % 2
+                }
+                return n + 0
+            }
+            $1 == "R" { gw = $2; dev = $3; next }
+            $1 != "A" || tolower($3) ~ /^(127\.|169\.254\.|::1(\/|$)|fe80:)/ { next }
+            {
+                a = $3
+                if (a !~ /\// && $4 != "") a = a "/" bits($4)
+                if (!($2 in addrs)) { order[++n] = $2; addrs[$2] = a }
+                else if (index(", " addrs[$2] ", ", ", " a ", ") == 0) addrs[$2] = addrs[$2] ", " a
+                if (length($2) > w) w = length($2)
+            }
+            END {
+                # Default route interface first
+                lbl = "Network"
+                if (dev in addrs) { printf "%s|%-" w "s  %s\n", lbl, dev, addrs[dev]; lbl = "" }
+                for (i = 1; i <= n; i++) {
+                    if (order[i] == dev) continue
+                    printf "%s|%-" w "s  %s\n", lbl, order[i], addrs[order[i]]; lbl = ""
+                }
+                if (gw dev == "") print "Gateway|none"
+                else print "Gateway|" (gw != "" ? gw : "direct") (dev != "" ? " on " dev : "")
+            }'
+    )
+
     for (( k = 0; k < ${#info[@]}; k += 2 ))
     do
         printf '  %s%-7s%s %s\n' "$lbl" "${info[k]}" "$rst" "${info[k+1]}"
