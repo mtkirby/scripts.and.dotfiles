@@ -1,4 +1,4 @@
-# 20261012 Kirby
+# 20261014 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -146,9 +146,34 @@ then
     alias grep='grep --color=auto -a '
     alias egrep='grep -E --color=auto -a '
 fi
-alias cp="cp -v"
-alias mv="mv -v"
-alias rm="rm -v"
+
+if cp --help -v >/dev/null 2>&1 \
+&& mv --help -v >/dev/null 2>&1 \
+&& rm --help -v >/dev/null 2>&1 
+then
+    alias cp="cp -v"
+    alias mv="mv -v"
+    alias rm="rm -v"
+elif [[ -f /usr/local/bin/gcp ]] \
+&& [[ -f /usr/local/bin/gmv ]] \
+&& [[ -f /usr/local/bin/grm ]]
+then
+    alias cp="/usr/local/bin/gcp -v"
+    alias mv="/usr/local/bin/gmv -v"
+    alias rm="/usr/local/bin/grm -v"
+elif [[ -f /opt/local/bin/gcp ]] \
+&& [[ -f /opt/local/bin/gmv ]] \
+&& [[ -f /opt/local/bin/grm ]]
+then
+    alias cp="/opt/local/bin/gcp -v"
+    alias mv="/opt/local/bin/gmv -v"
+    alias rm="/opt/local/bin/grm -v"
+else
+    unalias cp >/dev/null 2>&1
+    unalias mv >/dev/null 2>&1
+    unalias rm >/dev/null 2>&1
+fi
+
 alias ll='"ls" -Fl'
 alias l='"ls" -1AF'
 if /bin/ls -FAbd --color=never / >/dev/null 2>&1
@@ -167,21 +192,17 @@ alias mystrace='strace -yy -s 1024 -a 80 -f -v -y '
 alias ifsd="export IFS=$' \t\n'"
 alias ifsn="export IFS=$'\n'"
 
-if ps -e -o pid= >/dev/null 2>&1
+if ps -eww -o user,pid,ppid,pgid,stat,tty,nice,pcpu,pmem,stime,command >/dev/null 2>&1
 then
-    alias p='ps -eww -o uid,user,tty,pid,ppid,pcpu,pmem,nice,stime,command'
     alias psa='ps -eww -o user,pid,ppid,pgid,stat,tty,nice,pcpu,pmem,stime,command'
-    if ps -e -o lxc= >/dev/null 2>&1
-    then
-        alias myps='ps -eww -o lxc,user,pid,ppid,nice,pcpu,pmem,command'
-    else
-        alias myps='ps -eww -o user,pid,ppid,nice,pcpu,pmem,command'
-    fi
+elif ps -axwww -o user,pid,ppid,%cpu,%mem,vsz,rss,tt,stat,start,etime,time,command >/dev/null 2>&1
+then
+    alias psa='ps -axwww -o user,pid,ppid,%cpu,%mem,vsz,rss,tt,stat,start,etime,time,command'
 else
-    alias p='ps -ef'
     alias psa='ps -ef'
-    alias myps='ps -ef'
 fi
+alias pslxc='ps -eww -o lxc,cgroup,user,pid,ppid,nice,pcpu,pmem,command'
+
 alias sc='systemctl -l --no-pager'
 alias jc='journalctl -xa --no-pager'
 alias s='sudo'
@@ -336,14 +357,6 @@ else
 fi
 
 
-if [[ -e ~/.gitconfig ]] \
-&& command -v git >/dev/null 2>&1
-then
-    ihavegit="YES"
-else
-    PSGITREPO=""
-fi
-
 PROMPT_COMMAND=mkpromptcmd
 
 shicon=""
@@ -357,7 +370,7 @@ fi
 [[ $HOSTNAME =~ kali ]] && shicon="🔥"
 [[ $HOSTNAME =~ studio ]] && shicon="🍎🏠"
 [[ $HOSTNAME =~ nomad ]] && shicon="🍎💻"
-[[ $HOSTNAME =~ [rv][123456789].mk.lan ]] && shicon="🔩"
+[[ $HOSTNAME =~ [rv][123456789]\.mk\.lan ]] && shicon="🔩"
 
 declare -A ERR_MAP >/dev/null 2>&1
 ERR_MAP=(
@@ -568,15 +581,21 @@ function dogitps()
 }
 
 ##################################################
-function cd()
-{
-    builtin cd "$@" && {
-        if [[ $ihavegit == 'YES' ]]
-        then
-            dogitps
-        fi
+if [[ -e ~/.gitconfig ]] \
+&& command -v git >/dev/null 2>&1
+then
+    #ihavegit="YES"
+    function cd()
+    {
+        builtin cd "$@" || return
+        dogitps
+        return 0
     }
-}
+else
+    #ihavegit="NO"
+    PSGITREPO=""
+fi
+
 
 ##################################################
 function getaws()
@@ -707,8 +726,9 @@ whoipy() {
     fi
     if ! python3 -c 'import ipwhois' &>/dev/null
     then
-        echo "ipwhois not found. Installing via pip..." >&2
-        python3 -m pip install ipwhois || return 1
+        echo "FAIL: ipwhois not found."
+        echo "Install with python3 -m pip install ipwhois"
+        return 1
     fi
 
     local clean_ip
@@ -1165,7 +1185,9 @@ function highlight()
     bg-yellow) code="43;30;1" ;;
     *)       code="$color" ;; # Fallback: allows raw ANSI like "0;35" or "48;5;208"
   esac
-  if uname -s 2>/dev/null|grep -qEi 'Darwin|BSD' \
+
+  if grep --help 2>&1 |grep -q color \
+  && [[ "${PIPESTATUS[1]}" == 0 ]] \
   && command -v ggrep >/dev/null 2>&1
   then
      grepcmd='ggrep'
@@ -1617,8 +1639,9 @@ function mysysinfo()
                 for (i = 7; i <= NF; i++) mnt = mnt " " $i
                 if (mnt != "/" && index(ro, "|" mnt "|")) next
                 if (dev ~ /^[A-Za-z]:/) {
-                    # Cygwin and WSL drive letters: show each drive once
-                    if (mnt !~ /^\/(cygdrive|mnt)\//) next
+                    # Cygwin and WSL drive letters: show each drive once. Cygwin df
+                    # folds C: into its root ("C:/cygwin64 ... /"), so keep "/" too
+                    if (mnt != "/" && mnt !~ /^(\/cygdrive|\/mnt)?\/[A-Za-z]$/) next
                     dev = toupper(substr(dev, 1, 1))
                 } else if (mnt != "/" && (dev !~ /^\/dev\// || dev ~ /^\/dev\/loop/)) next
                 # macOS APFS helper volumes and Xcode simulator runtimes
@@ -1653,7 +1676,7 @@ function mysysinfo()
 }
 
 ##################################################
-if uname -o 2>/dev/null |grep -q Cygwin 
+if uname -os 2>/dev/null |grep -q Cygwin 
 then
     alias pbcopy='cat > /dev/clipboard'
     alias pbpaste='cat /dev/clipboard'
@@ -1920,7 +1943,6 @@ fi
 ##################################################
 if uname -s 2>/dev/null|grep -q BSD
 then
-    alias psa='ps -axwww -o user,pid,ppid,%cpu,%mem,vsz,rss,tt,stat,start,etime,time,command'
     alias free="top -d1 |grep -E '^Mem:|^Memory:'|head -1"
     alias patchfreebsd='sudo pkg update; echo -e "y\ny\n" |sudo pkg upgrade'
     alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
@@ -1929,9 +1951,6 @@ fi
 ##################################################
 if uname -os 2>/dev/null|grep -qiE 'sunos|illumos'
 then
-    unalias cp
-    unalias rm
-    unalias mv
     alias free="top -d 2 |grep -E '^Memory:'|head -1"
     alias patchopenindiana='sudo pkg update'
 fi
