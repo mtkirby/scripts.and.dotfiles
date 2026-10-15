@@ -154,16 +154,23 @@ then
     alias cp="cp -v"
     alias mv="mv -v"
     alias rm="rm -v"
+elif [[ -f /opt/homebrew/bin/gcp ]] \
+&&   [[ -f /opt/homebrew/bin/gmv ]] \
+&&   [[ -f /opt/homebrew/bin/grm ]]
+then
+    alias cp="/opt/homebrew/bin/gcp -v"
+    alias mv="/opt/homebrew/bin/gmv -v"
+    alias rm="/opt/homebrew/bin/grm -v"
 elif [[ -f /usr/local/bin/gcp ]] \
-&& [[ -f /usr/local/bin/gmv ]] \
-&& [[ -f /usr/local/bin/grm ]]
+&&   [[ -f /usr/local/bin/gmv ]] \
+&&   [[ -f /usr/local/bin/grm ]]
 then
     alias cp="/usr/local/bin/gcp -v"
     alias mv="/usr/local/bin/gmv -v"
     alias rm="/usr/local/bin/grm -v"
 elif [[ -f /opt/local/bin/gcp ]] \
-&& [[ -f /opt/local/bin/gmv ]] \
-&& [[ -f /opt/local/bin/grm ]]
+&&   [[ -f /opt/local/bin/gmv ]] \
+&&   [[ -f /opt/local/bin/grm ]]
 then
     alias cp="/opt/local/bin/gcp -v"
     alias mv="/opt/local/bin/gmv -v"
@@ -777,20 +784,41 @@ function patchgem()
 }
 
 ##################################################
+function patchmods()
+{
+    mkbanner "patchpip"
+    patchpip 2>&1 |tee /tmp/patchpip.log
+    mkbanner "patchpipx"
+    patchpipx 2>&1 |tee /tmp/patchpipx.log
+    mkbanner "patchgem"
+    patchgem 2>&1 |tee /tmp/patchgem.log
+    mkbanner "patchcpan"
+    patchcpan 2>&1 |tee /tmp/patchcpan.log
+    mkbanner "patchnpm"
+    patchnpm 2>&1 |tee /tmp/patchnpm.log
+    mkbanner "patchcargo"
+    patchcargo 2>&1 |tee /tmp/patchcargo.log
+}
+
+##################################################
+# Usage: patchpip [python]   (default python3, or the active venv's)
+# "python -m pip" so a non-Python "pip" earlier in PATH (pkgsrc's Perl one) isn't used
 function patchpip()
 {
-    if ! command -v pip >/dev/null 2>&1
+    local py="${1:-python3}" pkg
+    if ! "$py" -m pip --version >/dev/null 2>&1
     then
-        echo "FAIL: no pip installed"
+        echo "FAIL: no pip for $py ($(command -v "$py"))"
         return 1
     fi
-    pip install --upgrade pip
-    pip install pip-review
-    pip-review --auto --continue-on-fail
-    for pkg in $(pip list --outdated | tail -n +3 | awk '{print $1}')
-    do 
+    echo "Using $("$py" -m pip --version)"
+    "$py" -m pip install --upgrade pip
+    "$py" -m pip install pip-review
+    "$py" -m pip_review --auto --continue-on-fail
+    for pkg in $("$py" -m pip list --outdated | tail -n +3 | awk '{print $1}')
+    do
         echo "#################### $pkg"
-        pip install -U --force-reinstall --ignore-requires-python "$pkg"
+        "$py" -m pip install -U --force-reinstall --ignore-requires-python "$pkg"
     done
     if [[ -d ~/Library/Caches/pip ]]
     then
@@ -798,7 +826,34 @@ function patchpip()
         rm -rf ~/Library/Caches/pip >/dev/null 2>&1
     fi
     echo "######## pip list --outdated report"
-    pip list --outdated
+    "$py" -m pip list --outdated
+    echo "######################################"
+}
+
+##################################################
+# Python CLI tools installed with pipx or "uv tool", each in its own venv
+function patchpipx()
+{
+    local found=0
+    if command -v pipx >/dev/null 2>&1
+    then
+        found=1
+        pipx upgrade-all
+        echo "######## pipx list --short report"
+        pipx list --short
+    fi
+    if command -v uv >/dev/null 2>&1
+    then
+        found=1
+        uv tool upgrade --all
+        echo "######## uv tool list report"
+        uv tool list
+    fi
+    if (( ! found ))
+    then
+        echo "FAIL: neither pipx nor uv found"
+        return 1
+    fi
     echo "######################################"
 }
 
@@ -982,6 +1037,39 @@ function patchnpm()
     npm update -g
     echo "######## npm outdated -g report"
     npm outdated -g
+    echo "######################################"
+}
+
+##################################################
+# rustup update only refreshes the toolchains (rustc, cargo, clippy...);
+# binaries from "cargo install" are updated separately
+function patchcargo()
+{
+    local crate
+    if ! command -v cargo >/dev/null 2>&1
+    then
+        echo "FAIL: cargo not found"
+        return 1
+    fi
+    if command -v rustup >/dev/null 2>&1
+    then
+        rustup self update
+        rustup update
+    fi
+    if command -v cargo-install-update >/dev/null 2>&1
+    then
+        # cargo-update also handles crates installed from git
+        cargo install-update -a
+    else
+        # Registry crates only ("name vX.Y.Z:"); cargo install is a no-op
+        # when the installed version is already the latest
+        for crate in $(cargo install --list | awk '/^[^ ]+ v[^ ]+:$/ { print $1 }')
+        do
+            cargo install --locked "$crate" || cargo install "$crate"
+        done
+    fi
+    echo "######## cargo install --list report"
+    cargo install --list
     echo "######################################"
 }
 
@@ -1757,14 +1845,8 @@ then
         patchmsstore 2>&1 |tee /tmp/patchmsstore.log
         mkbanner "patchchoco"
         patchchoco 2>&1 |tee /tmp/patchchoco.log
-        mkbanner "patchpip"
-        patchpip 2>&1 |tee /tmp/patchpip.log
-        mkbanner "patchgem"
-        patchgem 2>&1 |tee /tmp/patchgem.log
-        mkbanner "patchcpan"
-        patchcpan 2>&1 |tee /tmp/patchcpan.log
-        mkbanner "patchnpm"
-        patchnpm 2>&1 |tee /tmp/patchnpm.log
+        mkbanner "patchmods"
+        patchmods
         mkbanner "mywinclam"
         mywinclam 2>&1 |tee /tmp/mywinclam.log
         mkbanner "windiskclean"
@@ -2085,14 +2167,8 @@ then
         patchmacports 2>&1 |tee /tmp/patchmacports.log
         mkbanner "patchpkgin"
         patchpkgin 2>&1 |tee /tmp/patchpkgin.log
-        mkbanner "patchpip"
-        patchpip 2>&1 |tee /tmp/patchpip.log
-        mkbanner "patchgem"
-        patchgem 2>&1 |tee /tmp/patchgem.log
-        mkbanner "patchcpan"
-        patchcpan 2>&1 |tee /tmp/patchcpan.log
-        mkbanner "patchnpm"
-        patchnpm 2>&1 |tee /tmp/patchnpm.log
+        mkbanner "patchmods"
+        patchmods
         mkbanner "myhbrewclam"
         myhbrewclam 2>&1 |tee /tmp/myhbrewclam.log
     }

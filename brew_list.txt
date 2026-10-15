@@ -45,7 +45,6 @@ claude-code-templates
 claude-hooks
 coreutils
 cpanminus
-cryptography
 curl
 cython
 datamash
@@ -57,7 +56,6 @@ discord
 dos2unix
 dotnet
 drawio
-dwarfutils
 exif
 exiftool
 fastfetch
@@ -274,6 +272,7 @@ pgpdump
 pinentry
 pinentry-mac
 pip-audit
+pipx
 pixman
 pkgconf
 popt
@@ -314,7 +313,6 @@ screen
 scribus
 sdl2-compat
 sdl3
-semgrep
 sevenzip
 shellcheck
 signal
@@ -350,10 +348,10 @@ terraformer
 tesseract
 tevent
 tflint
+tfsec
 theora
 tigervnc
 tinyproxy
-tree-sitter
 trivy
 uchardet
 unar
@@ -362,6 +360,7 @@ unixodbc
 unzip
 upscayl
 util-linux
+uv
 uvwasi
 vim
 vlc
