@@ -1,4 +1,4 @@
-# 20261014 Kirby
+# 20261015 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -561,6 +561,16 @@ alias pdb="python -m pdb"
 # debug in VS: debugpy --listen 5678 myscript.py
 alias debugpy="python -m debugpy"
 
+
+##################################################
+
+function psg()
+{
+    local out
+    out="$(psa |grep -Ev " $$ .*grep .*$*")"
+    head -n 1 <<<"$out"
+    tail -n +2 <<<"$out" | grep -Ei -- "$*"
+}
 
 ##################################################
 function dogitps()
