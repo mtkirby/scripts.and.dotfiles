@@ -320,6 +320,7 @@ simdjson
 simdutf
 slsa-verifier
 snitch
+sonar-scanner
 speex
 sqlite
 sqlite-utils

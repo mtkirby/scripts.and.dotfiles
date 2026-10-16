@@ -57,10 +57,10 @@ export oldLD_LIBRARY_PATH=$LD_LIBRARY_PATH
 newldpath="/lib64:/usr/lib64:/lib:/usr/lib"
 if [[ -e /etc/ld.so.conf ]]
 then
-    for i in $(cat /etc/ld.so.conf /etc/ld.so.conf.d/* 2>/dev/null |grep -E '^/')
+    while IFS= read -r i
     do
         newldpath="${newldpath}:${i}"
-    done
+    done < <(grep -hE '^/' /etc/ld.so.conf /etc/ld.so.conf.d/* 2>/dev/null)
 fi
 for i in \
     $HOME/.local/lib64 \
