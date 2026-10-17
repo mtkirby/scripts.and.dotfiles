@@ -10,7 +10,6 @@ esbenp.prettier-vscode
 github.vscode-github-actions
 github.vscode-pull-request-github
 google.geminicodeassist
-googlecloudtools.datacloud
 hashicorp.terraform
 kevinrose.vsc-python-indent
 mads-hartmann.bash-ide-vscode

@@ -21,7 +21,6 @@ asttokens
 async-lru
 attrs
 Automat
-awscli
 babel
 bc-detect-secrets
 bc-jsonpath-ng

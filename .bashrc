@@ -1496,7 +1496,7 @@ function mysysinfo()
 {
     local lbl=$'\e[96;1m' dim=$'\e[2m' rst=$'\e[0m'
     local os kernel arch cpu cores ncpu load up s secs boot b k
-    local memtotal memavail dfopt ro l1 l5 l15 sys n v ext
+    local memtotal memavail swaptotal swapused dfopt ro l1 l5 l15 sys n v ext
     local reg='/proc/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows NT/CurrentVersion'
     local -a info words
 
@@ -1520,9 +1520,11 @@ function mysysinfo()
             cpu="$(awk -F': *' '/^model name/ { print $2; exit }' /proc/cpuinfo 2>/dev/null)"
             # ARM's /proc/cpuinfo has no model name
             [[ -z "$cpu" ]] && cpu="$(lscpu 2>/dev/null | awk -F': *' '/^Model name/ { print $2; exit }')"
-            read -r memtotal memavail < <(awk '
+            read -r memtotal memavail swaptotal swapused < <(awk '
                 /^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } /^MemFree:/ { f = $2 }
-                END { if (!a) a = f; printf "%.0f %.0f\n", t * 1024, a * 1024 }' /proc/meminfo 2>/dev/null)
+                /^SwapTotal:/ { st = $2 } /^SwapFree:/ { sf = $2 }
+                END { if (!a) a = f
+                    printf "%.0f %.0f %.0f %.0f\n", t * 1024, a * 1024, st * 1024, (st - sf) * 1024 }' /proc/meminfo 2>/dev/null)
             ;;
         Darwin)
             os="$(sw_vers 2>/dev/null | awk -F':[ \t]*' '
@@ -1539,6 +1541,10 @@ function mysysinfo()
                 NR == 1 { match($0, /page size of [0-9]+/); ps = substr($0, RSTART + 13, RLENGTH - 13); next }
                 { split($0, kv, ":"); v = kv[2]; gsub(/[^0-9]/, "", v); p[kv[1]] = v }
                 END { printf "%.0f\n", (p["Pages free"] + p["File-backed pages"] + p["Pages purgeable"]) * ps }')"
+            # "total = 2048.00M  used = 1024.50M  free = 1023.50M  (encrypted)"
+            read -r swaptotal swapused < <(sysctl -n vm.swapusage 2>/dev/null | awk '
+                function b(s) { return s * (s ~ /G$/ ? 1073741824 : s ~ /M$/ ? 1048576 : s ~ /K$/ ? 1024 : 1) }
+                $1 == "total" { printf "%.0f %.0f\n", b($3), b($6) }')
             ;;
         FreeBSD)
             os="$(freebsd-version 2>/dev/null)"
@@ -1567,8 +1573,19 @@ function mysysinfo()
                     /physmem/ { t = $2 } /freemem/ { f = $2 }
                     END { printf "%.0f %.0f\n", t * ps, f * ps }')
             boot="$(kstat -p unix:0:system_misc:boot_time 2>/dev/null | awk '{ print $2 }')"
+            # swap -l counts 512-byte blocks
+            read -r swaptotal swapused < <(swap -l 2>/dev/null | awk '
+                NR > 1 { t += $4; f += $5 } END { if (NR > 1) printf "%.0f %.0f\n", t * 512, (t - f) * 512 }')
             ;;
     esac
+
+    # BSD swap: FreeBSD prints "Total: 2097152 0", OpenBSD and NetBSD print
+    # "total: 2097152 1K-blocks allocated, 0 used, 2097152 available"
+    if [[ -z "$swaptotal" ]] && command -v swapctl >/dev/null 2>&1
+    then
+        read -r swaptotal swapused < <(swapctl -sk 2>/dev/null | awk '
+            tolower($1) == "total:" { u = ($3 ~ /^[0-9]+$/) ? $3 : $5; printf "%.0f %.0f\n", $2 * 1024, u * 1024 }')
+    fi
 
     if [[ -z "$os" || "$os" == "$kernel" ]]
     then
@@ -1748,6 +1765,7 @@ function mysysinfo()
     {
         [[ "${memtotal:-0}" -gt 0 ]] \
             && echo "Memory|$memtotal|$(( memtotal - memavail ))|$memavail"
+        [[ -n "$swaptotal" ]] && echo "Swap|$swaptotal|$swapused|$(( swaptotal - swapused ))"
         df "$dfopt" 2>/dev/null | awk -v ro="|$ro" '
             NR == 1 { next }
             {
@@ -1782,7 +1800,7 @@ function mysysinfo()
             for (i = 1; i <= 20; i++) s = s (i <= n ? "#" : i == n + 1 ? "\033[2m." : ".")
             return "[" s "\033[0m]"
         }
-        NF == 4 {
+        NF >= 4 {
             name = length($1) > 22 ? "..." substr($1, length($1) - 18) : $1
             p = ($3 + $4) > 0 ? $3 * 100 / ($3 + $4) : 0
             printf "  %-22s %7s %7s %7s %4d%%  %s\n", name, h($2), h($3), h($4), p, bar(p)
@@ -1871,6 +1889,8 @@ then
         patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         mkbanner "patchmsstore"
         patchmsstore 2>&1 |tee /tmp/patchmsstore.log
+        mkbanner "winget upgrade --all"
+        winget upgrade --all 2>&1 |tee /tmp/winget_upgrade_all.log
         mkbanner "patchchoco"
         patchchoco 2>&1 |tee /tmp/patchchoco.log
         mkbanner "patchmods"
