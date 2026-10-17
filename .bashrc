@@ -1889,7 +1889,7 @@ then
         patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         mkbanner "patchmsstore"
         patchmsstore 2>&1 |tee /tmp/patchmsstore.log
-        mkbanner "winget upgrade --all"
+        mkbanner "winget upgrade --all --include-unknown --accept-source-agreements --accept-package-agreements --disable-interactivity"
         winget upgrade --all 2>&1 |tee /tmp/winget_upgrade_all.log
         mkbanner "patchchoco"
         patchchoco 2>&1 |tee /tmp/patchchoco.log
