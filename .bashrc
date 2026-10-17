@@ -1,4 +1,4 @@
-# 20261015 Kirby
+# 20261017 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -1496,7 +1496,7 @@ function mysysinfo()
 {
     local lbl=$'\e[96;1m' dim=$'\e[2m' rst=$'\e[0m'
     local os kernel arch cpu cores ncpu load up s secs boot b k
-    local memtotal memavail dfopt ro l1 l5 l15 sys n v
+    local memtotal memavail dfopt ro l1 l5 l15 sys n v ext
     local reg='/proc/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows NT/CurrentVersion'
     local -a info words
 
@@ -1710,9 +1710,27 @@ function mysysinfo()
             }'
     )
 
+    # Runs at every interactive login, so keep it short when offline: both
+    # lookups run at once with a 1s timeout. dig +short prints ";;" errors on
+    # stdout, so only keep address-shaped answers
+    if command -v dig >/dev/null 2>&1
+    then
+        ext="$( {
+            dig -4 +short +time=1 +tries=1 A myip.opendns.com @resolver1.opendns.com &
+            dig -6 +short +time=1 +tries=1 AAAA myip.opendns.com @resolver1.opendns.com &
+            wait
+        } 2>/dev/null | awk '
+            /^[0-9]+(\.[0-9]+)+$/ && v4 == "" { v4 = $0 }
+            /:/ && /^[0-9A-Fa-f:]+$/ && v6 == "" { v6 = $0 }
+            END { print v4 (v4 != "" && v6 != "" ? ", " : "") v6 }')"
+        info+=(External "${ext:-unavailable}")
+    else
+        info+=(External "dig not installed")
+    fi
+
     for (( k = 0; k < ${#info[@]}; k += 2 ))
     do
-        printf '  %s%-7s%s %s\n' "$lbl" "${info[k]}" "$rst" "${info[k+1]}"
+        printf '  %s%-8s%s %s\n' "$lbl" "${info[k]}" "$rst" "${info[k+1]}"
     done
 
     # -l keeps df off network mounts, which can hang a new shell
