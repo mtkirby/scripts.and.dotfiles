@@ -1817,6 +1817,12 @@ then
     alias open='cygstart'
 
     ##
+    function cyglistpkgs()
+    {
+        cygcheck -c | awk 'NR>2 {print $1}'
+    }
+
+    ##
     function patchchoco()
     {
         choco upgrade all --ignore-dependencies -y
