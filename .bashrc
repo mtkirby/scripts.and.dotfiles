@@ -1911,6 +1911,8 @@ then
         fi
         mkbanner "patchmssigs"
         patchmssigs 2>&1 |tee /tmp/patchmssigs.log
+        mkbanner "patchchoco"
+        patchchoco 2>&1 |tee /tmp/patchchoco.log
         mkbanner "patchwinvs"
         patchwinvs 2>&1 |tee /tmp/patchwinvs.log
         mkbanner "patchcygwin"
@@ -1919,10 +1921,8 @@ then
         patchmsstore 2>&1 |tee /tmp/patchmsstore.log
         mkbanner "patchwinget"
         patchwinget 2>&1 |tee /tmp/patchwinget.log
-        mkbanner "patchchoco"
-        patchchoco 2>&1 |tee /tmp/patchchoco.log
         mkbanner "patchmods"
-        patchmods
+        patchmods 2>&1 |tee /tmp/patchmods.log
         mkbanner "mywinclam"
         mywinclam 2>&1 |tee /tmp/mywinclam.log
         mkbanner "windiskclean"
