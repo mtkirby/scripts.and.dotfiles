@@ -1,4 +1,4 @@
-# 20261017 Kirby
+# 20261018 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -613,6 +613,11 @@ else
     PSGITREPO=""
 fi
 
+##################################################
+function strip_pkg_versions()
+{
+    sed -E 's/-[0-9]+([.][0-9]+)*([a-z][0-9]*)*$//'
+}
 
 ##################################################
 function getaws()
@@ -1107,14 +1112,27 @@ function patchapt()
 ##################################################
 function patchpkgin()
 {
-    if command -v pkgin >/dev/null 2>&1
+    local pkgin
+    local -a asroot=(sudo)
+    pkgin="$(type -P pkgin)"
+    if [[ -z "$pkgin" ]]
     then
-        sudo pkgin update
-        echo y|sudo pkgin upgrade
-    else
+        for pkgin in /opt/pkg/bin/pkgin /opt/local/bin/pkgin ''
+        do
+            [[ -x "$pkgin" ]] && break
+        done
+    fi
+    if [[ -z "$pkgin" ]]
+    then
         echo "FAIL: pkgin not found"
         return 1
     fi
+    (( EUID == 0 )) && asroot=()
+    "${asroot[@]}" "$pkgin" -y update || return
+    "${asroot[@]}" "$pkgin" -y upgrade || return
+    # -y doesn't apply to autoremove, so answer its prompt here
+    yes | "${asroot[@]}" "$pkgin" autoremove
+    "${asroot[@]}" "$pkgin" clean
 }
 
 ##################################################
@@ -1142,6 +1160,399 @@ function patchdnf()
     command -v rpmconf >/dev/null 2>&1 || dnf install -y rpmconf
     rpmconf -a
     dnf needs-restarting
+}
+
+##################################################
+function _myprocsigs_listed()
+{
+    # True if any line of $1 names one of the paths $2... as a whole word.
+    # Used by the my*procsigs functions to find a program in verify output.
+    local text="$1" line p
+    shift
+    while IFS= read -r line
+    do
+        for p in "$@"
+        do
+            case " $line " in
+                *" $p "*|*" $p:"*) return 0 ;;
+            esac
+        done
+    done <<<"$text"
+    return 1
+}
+
+##################################################
+function mylinuxprocsigs()
+{
+    # Linux programs aren't signed, so list running programs that are
+    #   DELETED   replaced on disk since they started (usually just needs a restart)
+    #   UNOWNED   not installed by any package
+    #   MODIFIED  changed since their package installed them
+    # Works with dpkg (apt), rpm (dnf/yum), and apk. Container processes are skipped.
+    local pm exe alt p pkg key
+    local -a asroot=(sudo) exes
+    local -A verify
+
+    if [[ "$(uname -s 2>/dev/null)" != Linux ]]
+    then
+        echo "FAIL: mylinuxprocsigs is for Linux"
+        return 1
+    fi
+    if command -v dpkg-query >/dev/null 2>&1 && [[ -s /var/lib/dpkg/status ]]
+    then
+        pm=dpkg
+    elif command -v rpm >/dev/null 2>&1
+    then
+        pm=rpm
+    elif command -v apk >/dev/null 2>&1
+    then
+        pm=apk
+    else
+        echo "FAIL: no dpkg, rpm, or apk found"
+        return 1
+    fi
+    (( EUID == 0 )) && asroot=()
+
+    # One path per running program, only for processes in the host's mount namespace
+    # shellcheck disable=SC2016
+    mapfile -t exes < <("${asroot[@]}" sh -c '
+        m=$(readlink /proc/1/ns/mnt)
+        for d in /proc/[0-9]*
+        do
+            [ "$(readlink "$d/ns/mnt")" = "$m" ] && readlink "$d/exe"
+        done' 2>/dev/null | sort -u)
+
+    for exe in "${exes[@]}"
+    do
+        if [[ "$exe" != /* || "$exe" == *" (deleted)" ]]
+        then
+            printf '%-9s %s\n' DELETED "$exe"
+            continue
+        fi
+        # Merged /usr: the package may list /bin/x for /usr/bin/x
+        alt="${exe#/usr}"
+
+        pkg=""
+        for p in "$exe" "$alt"
+        do
+            case "$pm" in
+                dpkg)
+                    pkg="$(dpkg-query -S "$p" 2>/dev/null |grep -v '^diversion' |head -n1)"
+                    pkg="${pkg%%: /*}"
+                    pkg="${pkg%%,*}"
+                    ;;
+                rpm)
+                    pkg="$(rpm -qf --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n' "$p" 2>/dev/null)" \
+                        || pkg=""
+                    pkg="${pkg%%$'\n'*}"
+                    ;;
+                apk)
+                    pkg="$(apk info --who-owns "$p" 2>/dev/null)"
+                    [[ "$pkg" == *" is owned by "* ]] && pkg="${pkg##* is owned by }" || pkg=""
+                    ;;
+            esac
+            [[ -n "$pkg" ]] && break
+        done
+        if [[ -z "$pkg" ]]
+        then
+            printf '%-9s %s\n' UNOWNED "$exe"
+            continue
+        fi
+
+        # Verify each package (apk: each directory) once
+        case "$pm" in
+            apk) key="${exe%/*}" ;;
+            *)   key="$pkg" ;;
+        esac
+        if [[ -z "${verify[$key]+set}" ]]
+        then
+            case "$pm" in
+                dpkg) verify[$key]="$("${asroot[@]}" dpkg --verify "$pkg" 2>/dev/null)" ;;
+                rpm)  verify[$key]="$("${asroot[@]}" rpm -V "$pkg" 2>/dev/null)" ;;
+                apk)  verify[$key]="$("${asroot[@]}" apk audit --system "$key" 2>/dev/null)" ;;
+            esac
+        fi
+
+        # Any verify line naming this program means it differs from the package
+        _myprocsigs_listed "${verify[$key]}" "$exe" "$alt" "${exe#/}" "${alt#/}" \
+            && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+    done
+}
+
+##################################################
+function myfreebsdprocsigs()
+{
+    # Like mylinuxprocsigs, list running programs that are
+    #   DELETED   gone from disk, or its path can't be found
+    #   UNOWNED   not from a package or the base system
+    #   MODIFIED  changed since it was installed
+    # Packages (and pkgbase systems) are checked with pkg check. Other base
+    # programs are checked with freebsd-update IDS, which is slow and only works
+    # on releases kept up to date with freebsd-update. Jails are skipped.
+    local pid jid flags comm exe pkg text ids idsrun=""
+    local -a asroot=(sudo) pids exes
+    local -A verify
+
+    if [[ "$(uname -s 2>/dev/null)" != FreeBSD ]]
+    then
+        echo "FAIL: myfreebsdprocsigs is for FreeBSD"
+        return 1
+    fi
+    (( EUID == 0 )) && asroot=()
+
+    # Host processes only (jail 0), skipping kernel processes (P_SYSTEM flag)
+    while read -r pid jid flags
+    do
+        (( jid == 0 && ! (0x$flags & 0x200) )) && pids+=("$pid")
+    done < <(ps -axo pid=,jid=,flags=)
+    mapfile -t exes < <("${asroot[@]}" procstat -h -b "${pids[@]}" 2>/dev/null |
+        while read -r pid comm _ exe
+        do
+            if [[ "$exe" == /* && -e "$exe" ]]
+            then
+                echo "$exe"
+            else
+                echo "(pid $pid: $comm)"
+            fi
+        done | sort -u)
+
+    for exe in "${exes[@]}"
+    do
+        if [[ "$exe" != /* ]]
+        then
+            printf '%-9s %s\n' DELETED "$exe"
+            continue
+        fi
+        pkg="$(pkg which -q "$exe" 2>/dev/null)"
+        if [[ -n "$pkg" ]]
+        then
+            [[ -z "${verify[$pkg]+set}" ]] \
+                && verify[$pkg]="$("${asroot[@]}" pkg check -s "$pkg" 2>&1)"
+            text="${verify[$pkg]}"
+        else
+            case "$exe" in
+                /bin/*|/sbin/*|/libexec/*|/rescue/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/lib/*) ;;
+                *)
+                    printf '%-9s %s\n' UNOWNED "$exe"
+                    continue
+                    ;;
+            esac
+            pkg=base
+            if [[ -z "$idsrun" ]]
+            then
+                idsrun=1
+                if ! ids="$("${asroot[@]}" freebsd-update --not-running-from-cron IDS 2>/dev/null)"
+                then
+                    echo "NOTE: base programs not checked: freebsd-update IDS failed"
+                    ids=""
+                fi
+            fi
+            text="$ids"
+        fi
+        _myprocsigs_listed "$text" "$exe" && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+    done
+}
+
+##################################################
+function myopenbsdprocsigs()
+{
+    # Like mylinuxprocsigs, list running programs that are
+    #   DELETED   gone from disk
+    #   UNOWNED   not from a package or the base system
+    #   MODIFIED  differs from the SHA-256 its package recorded
+    # OpenBSD doesn't reveal a running program's path, so each one is found by
+    # its inode (from fstat). Base programs have no recorded checksums, so they
+    # are only checked for being in a base directory.
+    local mount ino cmd pid dev exe pkg want have
+    local -a asroot=(sudo)
+    local -a dirs=(/bin /sbin /usr/bin /usr/sbin /usr/libexec /usr/X11R6/bin
+                   /usr/local/bin /usr/local/sbin /usr/local/libexec)
+    local -A where devof seen
+
+    if [[ "$(uname -s 2>/dev/null)" != OpenBSD ]]
+    then
+        echo "FAIL: myopenbsdprocsigs is for OpenBSD"
+        return 1
+    fi
+    (( EUID == 0 )) && asroot=()
+
+    # device:inode -> path for every file in the usual program directories
+    while read -r dev ino exe
+    do
+        [[ -z "${where[$dev:$ino]+set}" ]] && where[$dev:$ino]="$exe"
+    done < <(find "${dirs[@]}" -type f -exec stat -f '%d %i %N' {} + 2>/dev/null)
+
+    while read -r mount ino cmd pid
+    do
+        [[ -n "${seen[$mount:$ino]+set}" ]] && continue
+        seen[$mount:$ino]=1
+        [[ -z "${devof[$mount]+set}" ]] && devof[$mount]="$(stat -f %d "$mount")"
+        exe="${where[${devof[$mount]}:$ino]}"
+        [[ -z "$exe" ]] \
+            && exe="$("${asroot[@]}" find "$mount" -xdev -type f -inum "$ino" 2>/dev/null |head -n1)"
+        if [[ -z "$exe" ]]
+        then
+            printf '%-9s %s\n' DELETED "(pid $pid: $cmd)"
+            continue
+        fi
+
+        pkg="$(pkg_info -E "$exe" 2>/dev/null |head -n1)"
+        pkg="${pkg##*: }"
+        if [[ -z "$pkg" ]]
+        then
+            case "$exe" in
+                /usr/local/*) ;;
+                /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/X11R6/*) continue ;;
+            esac
+            printf '%-9s %s\n' UNOWNED "$exe"
+            continue
+        fi
+
+        # Find this file's @sha line in the package's packing list
+        want="$(awk -v f="$exe" '
+            $1 == "@cwd" { cwd = $2; sub(/\/+$/, "", cwd); next }
+            /^@(bin|file|lib|so|shlib|static-lib|man|info) / { cur = cwd "/" substr($0, index($0, " ") + 1); next }
+            !/^@/ { cur = cwd "/" $0; next }
+            $1 == "@sha" && cur == f { print $2; exit }' "/var/db/pkg/$pkg/+CONTENTS" 2>/dev/null)"
+        [[ -z "$want" ]] && continue
+        have="$("${asroot[@]}" sha256 -qb "$exe" 2>/dev/null)"
+        [[ "$have" != "$want" ]] && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+    done < <("${asroot[@]}" fstat 2>/dev/null |awk '$4 == "text" {print $5, $6, $2, $3}')
+}
+
+##################################################
+function mynetbsdprocsigs()
+{
+    # Like mylinuxprocsigs, list running programs that are
+    #   DELETED   gone from disk, or its path can't be found
+    #   UNOWNED   not from a pkgsrc package or the base system
+    #   MODIFIED  changed since its pkgsrc package installed it
+    # Uses /proc, which must be mounted. pkgsrc programs are checked with
+    # pkg_admin check. Base programs have no recorded checksums, so they are
+    # only checked for being in a base directory.
+    local exe pkg
+    local -a asroot=(sudo) exes
+    local -A verify
+
+    if [[ "$(uname -s 2>/dev/null)" != NetBSD ]]
+    then
+        echo "FAIL: mynetbsdprocsigs is for NetBSD"
+        return 1
+    fi
+    if [[ ! -d /proc/1 ]]
+    then
+        echo "FAIL: /proc isn't mounted: run sudo mount_procfs procfs /proc"
+        return 1
+    fi
+    (( EUID == 0 )) && asroot=()
+
+    # One path per running program, skipping pid 0 (the kernel)
+    # shellcheck disable=SC2016
+    mapfile -t exes < <("${asroot[@]}" sh -c '
+        for d in /proc/[1-9]*
+        do
+            [ -d "$d" ] || continue
+            readlink "$d/exe" 2>/dev/null || echo "(pid ${d#/proc/}: $(cat "$d/cmdline" 2>/dev/null |tr "\0" " "))"
+        done' | sort -u)
+
+    for exe in "${exes[@]}"
+    do
+        if [[ "$exe" != /* || ! -e "$exe" ]]
+        then
+            printf '%-9s %s\n' DELETED "$exe"
+            continue
+        fi
+        pkg="$(pkg_info -Fe "$exe" 2>/dev/null |head -n1)"
+        if [[ -z "$pkg" ]]
+        then
+            case "$exe" in
+                /bin/*|/sbin/*|/libexec/*|/rescue/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/games/*|/usr/X11R7/*) ;;
+                *) printf '%-9s %s\n' UNOWNED "$exe" ;;
+            esac
+            continue
+        fi
+        [[ -z "${verify[$pkg]+set}" ]] \
+            && verify[$pkg]="$("${asroot[@]}" pkg_admin check "$pkg" 2>&1)"
+        _myprocsigs_listed "${verify[$pkg]}" "$exe" && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+    done
+}
+
+##################################################
+function myopenindianaprocsigs()
+{
+    # Like mylinuxprocsigs, list running programs that are
+    #   DELETED   gone from disk, or its path can't be found
+    #   UNOWNED   not installed by any IPS package
+    #   MODIFIED  changed since its package installed it (pkg verify)
+    # The whole OS is IPS packages, so base programs are checked too, and
+    # MODIFIED lines are followed by pkg verify's reasons (Hash, Mode, ...).
+    # Processes in other zones are skipped.
+    local zone pid class exe pkg verify why
+    local -a asroot=(sudo) pids exes pkgs
+    local -A owner
+
+    if ! uname -os 2>/dev/null |grep -qiE 'sunos|illumos'
+    then
+        echo "FAIL: myopenindianaprocsigs is for OpenIndiana"
+        return 1
+    fi
+    (( EUID == 0 )) && asroot=()
+
+    # This zone's processes, skipping kernel ones (class SYS)
+    zone="$(zonename 2>/dev/null || echo global)"
+    while read -r pid class
+    do
+        [[ "$class" != SYS ]] && pids+=("$pid")
+    done < <(ps -z "$zone" -o pid=,class=)
+    # shellcheck disable=SC2016
+    mapfile -t exes < <("${asroot[@]}" sh -c '
+        for p in "$@"
+        do
+            [ -d "/proc/$p" ] || continue
+            if t=$(ls -l "/proc/$p/path/a.out" 2>/dev/null)
+            then
+                echo "${t#* -> }"
+            else
+                echo "(pid $p: $(ps -o comm= -p "$p"))"
+            fi
+        done' sh "${pids[@]}" | sort -u)
+
+    # Owning package of each program, from one pass over all installed files
+    while IFS=$'\t' read -r exe pkg
+    do
+        owner[$exe]="$pkg"
+    done < <(pkg contents -H -o path,pkg.name -t file,hardlink 2>/dev/null |
+        awk 'NR == FNR { want[$0] = 1; next } ("/" $1) in want { print "/" $1 "\t" $2 }' \
+            <(printf '%s\n' "${exes[@]}") -)
+
+    # Verify every owning package in one run, since pkg verify's planning alone takes minutes
+    mapfile -t pkgs < <(printf '%s\n' "${owner[@]}" |sort -u)
+    (( ${#pkgs[@]} )) && verify="$("${asroot[@]}" pkg verify "${pkgs[@]}" 2>&1)"
+
+    for exe in "${exes[@]}"
+    do
+        if [[ "$exe" != /* || ! -e "$exe" ]]
+        then
+            printf '%-9s %s\n' DELETED "$exe"
+            continue
+        fi
+        pkg="${owner[$exe]}"
+        if [[ -z "$pkg" ]]
+        then
+            printf '%-9s %s\n' UNOWNED "$exe"
+            continue
+        fi
+        # The ERROR lines under this program's "file:" (or "hardlink:") line
+        why="$(awk -v rel="${exe#/}" '
+            { line = $0; sub(/^[ \t]+/, "", line) }
+            line ~ /^pkg:\/\// || line ~ /^[a-z]+: / { hit = (line == "file: " rel || line == "hardlink: " rel); next }
+            hit && line ~ /^ERROR: / { print "          " substr(line, 8) }' <<<"$verify")"
+        if [[ -n "$why" ]]
+        then
+            printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+            printf '%s\n' "$why"
+        fi
+    done
 }
 
 ##################################################
@@ -1888,6 +2299,19 @@ then
         /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command "Update-MpSignature"
     }
 
+    ##
+    function mywinprocsigs()
+    {
+        # List running programs without a valid Authenticode signature.
+        # Run as Administrator, or other users' and system process paths are hidden.
+        # shellcheck disable=SC2016
+        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+            Get-Process | Where-Object Path | ForEach-Object Path | Sort-Object -Unique |
+            ForEach-Object {
+                $s = Get-AuthenticodeSignature -LiteralPath $_
+                if ($s.Status -ne "Valid") { "{0,-14} {1}" -f $s.Status, $_ }
+            }'
+    }
 
     ##
     function patchwinget()
@@ -1929,6 +2353,8 @@ then
         windiskclean 2>&1 |tee /tmp/windiskclean.log
         mkbanner "windiskdefrag"
         windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
+        mkbanner "mywinprocsigs"
+        mywinprocsigs 2>&1 |tee /tmp/mywinprocsigs.log
     }
 
     ##
@@ -2229,6 +2655,16 @@ then
         [[ "$isrunning" == 1 ]] && open -a "Visual Studio Code"
     }
 
+    ##
+    function mymacprocsigs()
+    {
+        if ! command -v osqueryi >/dev/null 2>&1
+        then
+            echo "FAIL: SKIPPING mymacprocsigs.  Install osquery with homebrew"
+            return 1
+        fi
+        osqueryi --list "SELECT DISTINCT p.path FROM processes AS p JOIN signature AS s ON p.path = s.path WHERE s.signed = 0 ORDER BY p.path;"
+    }
 
     ##
     function mymacpatchall()
@@ -2247,6 +2683,8 @@ then
         patchmods
         mkbanner "myhbrewclam"
         myhbrewclam 2>&1 |tee /tmp/myhbrewclam.log
+        mkbanner "mymacprocsigs"
+        mymacprocsigs 2>&1 |tee /tmp/mymacprocsigs.log
     }
 
     ##
