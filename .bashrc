@@ -35,7 +35,7 @@ for i in \
     /usr/sbin \
     /usr/libexec \
     /usr/local/bin \
-    /usr/local/sbin 
+    /usr/local/sbin
 do
     [[ -d "$i" ]] && export PATH="${PATH:+${PATH}:}${i}"
 done
@@ -149,7 +149,7 @@ fi
 
 if cp --help -v >/dev/null 2>&1 \
 && mv --help -v >/dev/null 2>&1 \
-&& rm --help -v >/dev/null 2>&1 
+&& rm --help -v >/dev/null 2>&1
 then
     alias cp="cp -v"
     alias mv="mv -v"
@@ -220,8 +220,6 @@ command -v vim >/dev/null 2>&1 && alias vi=vim
 
 command -v rdap >/dev/null 2>&1 && alias whois='rdap'
 
-
-
 ##################################################
 # HISTORY
 ##################################################
@@ -236,8 +234,8 @@ command -v rdap >/dev/null 2>&1 && alias whois='rdap'
 #done
 #export HISTFILE="$HOME/.bash_histories/$(date +%Y%m%d).$(tty |tr '/' '_')"
 export HISTFILE=~/.bash_history
-#export HISTTIMEFORMAT="%Y-%m-%d %H:%M:%S # " 
-export HISTTIMEFORMAT="%Y%m%d.%H:%M:%S# " 
+#export HISTTIMEFORMAT="%Y-%m-%d %H:%M:%S # "
+export HISTTIMEFORMAT="%Y%m%d.%H:%M:%S# "
 export HISTSIZE=100000
 export HISTCONTROL=ignoredups:erasedups:ignorespace
 shopt -s histappend
@@ -362,7 +360,6 @@ then
 else
     PSCPUCOUNT=""
 fi
-
 
 PROMPT_COMMAND=mkpromptcmd
 
@@ -561,7 +558,6 @@ alias pdb="python -m pdb"
 # debug in VS: debugpy --listen 5678 myscript.py
 alias debugpy="python -m debugpy"
 
-
 ##################################################
 
 function psg()
@@ -623,7 +619,7 @@ function strip_pkg_versions()
 function getaws()
 {
     if [[ ! -n "$AWS_PROFILE" ]]
-    then 
+    then
         echo "FAIL: YOU NEED TO SETUP \$AWS_PROFILE"
         return 1
     fi
@@ -696,7 +692,6 @@ function sshagent()
     fi
     true
 }
-
 
 ##################################################
 function dnstxtwrap() {
@@ -785,7 +780,7 @@ function patchgem()
         return 1
     fi
     if brew --prefix ruby >/dev/null 2>&1 \
-    && [[ -d "$(brew --prefix ruby)" ]] 
+    && [[ -d "$(brew --prefix ruby)" ]]
     then
         echo "chmod'ing u+w ruby dir"
         chmod -R u+w "$(brew --prefix ruby)" /opt/homebrew/Cellar/ruby
@@ -1089,27 +1084,6 @@ function patchcargo()
 }
 
 ##################################################
-function patchapt()
-{
-    if ! command -v apt >/dev/null 2>&1
-    then
-        echo "FAIL: apt not found"
-        return 1
-    fi
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade -y
-    apt-get update -y
-    apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -y
-    apt-get update -y
-    apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" auto-remove -y
-    apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y
-    apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" clean -y
-    apt-file update
-    systemctl --failed
-}
-
-##################################################
 function patchpkgin()
 {
     local pkgin
@@ -1144,25 +1118,6 @@ function patchhaiku()
 }
 
 ##################################################
-function patchdnf()
-{
-    if ! command -v dnf >/dev/null 2>&1
-    then
-        echo "FAIL: dnf not found"
-        return 1
-    fi
-    if uname -r 2>/dev/null |grep -qi amzn
-    then
-        dnf --refresh update -y --releasever=latest
-    else
-        dnf --refresh update -y
-    fi
-    command -v rpmconf >/dev/null 2>&1 || dnf install -y rpmconf
-    rpmconf -a
-    dnf needs-restarting
-}
-
-##################################################
 function _myprocsigs_listed()
 {
     # True if any line of $1 names one of the paths $2... as a whole word.
@@ -1182,378 +1137,261 @@ function _myprocsigs_listed()
 }
 
 ##################################################
-function mylinuxprocsigs()
-{
-    # Linux programs aren't signed, so list running programs that are
-    #   DELETED   replaced on disk since they started (usually just needs a restart)
-    #   UNOWNED   not installed by any package
-    #   MODIFIED  changed since their package installed them
-    # Works with dpkg (apt), rpm (dnf/yum), and apk. Container processes are skipped.
-    local pm exe alt p pkg key
-    local -a asroot=(sudo) exes
-    local -A verify
-
-    if [[ "$(uname -s 2>/dev/null)" != Linux ]]
-    then
-        echo "FAIL: mylinuxprocsigs is for Linux"
-        return 1
-    fi
-    if command -v dpkg-query >/dev/null 2>&1 && [[ -s /var/lib/dpkg/status ]]
-    then
-        pm=dpkg
-    elif command -v rpm >/dev/null 2>&1
-    then
-        pm=rpm
-    elif command -v apk >/dev/null 2>&1
-    then
-        pm=apk
-    else
-        echo "FAIL: no dpkg, rpm, or apk found"
-        return 1
-    fi
-    (( EUID == 0 )) && asroot=()
-
-    # One path per running program, only for processes in the host's mount namespace
-    # shellcheck disable=SC2016
-    mapfile -t exes < <("${asroot[@]}" sh -c '
-        m=$(readlink /proc/1/ns/mnt)
-        for d in /proc/[0-9]*
-        do
-            [ "$(readlink "$d/ns/mnt")" = "$m" ] && readlink "$d/exe"
-        done' 2>/dev/null | sort -u)
-
-    for exe in "${exes[@]}"
-    do
-        if [[ "$exe" != /* || "$exe" == *" (deleted)" ]]
-        then
-            printf '%-9s %s\n' DELETED "$exe"
-            continue
-        fi
-        # Merged /usr: the package may list /bin/x for /usr/bin/x
-        alt="${exe#/usr}"
-
-        pkg=""
-        for p in "$exe" "$alt"
-        do
-            case "$pm" in
-                dpkg)
-                    pkg="$(dpkg-query -S "$p" 2>/dev/null |grep -v '^diversion' |head -n1)"
-                    pkg="${pkg%%: /*}"
-                    pkg="${pkg%%,*}"
-                    ;;
-                rpm)
-                    pkg="$(rpm -qf --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n' "$p" 2>/dev/null)" \
-                        || pkg=""
-                    pkg="${pkg%%$'\n'*}"
-                    ;;
-                apk)
-                    pkg="$(apk info --who-owns "$p" 2>/dev/null)"
-                    [[ "$pkg" == *" is owned by "* ]] && pkg="${pkg##* is owned by }" || pkg=""
-                    ;;
-            esac
-            [[ -n "$pkg" ]] && break
-        done
-        if [[ -z "$pkg" ]]
-        then
-            printf '%-9s %s\n' UNOWNED "$exe"
-            continue
-        fi
-
-        # Verify each package (apk: each directory) once
-        case "$pm" in
-            apk) key="${exe%/*}" ;;
-            *)   key="$pkg" ;;
-        esac
-        if [[ -z "${verify[$key]+set}" ]]
-        then
-            case "$pm" in
-                dpkg) verify[$key]="$("${asroot[@]}" dpkg --verify "$pkg" 2>/dev/null)" ;;
-                rpm)  verify[$key]="$("${asroot[@]}" rpm -V "$pkg" 2>/dev/null)" ;;
-                apk)  verify[$key]="$("${asroot[@]}" apk audit --system "$key" 2>/dev/null)" ;;
-            esac
-        fi
-
-        # Any verify line naming this program means it differs from the package
-        _myprocsigs_listed "${verify[$key]}" "$exe" "$alt" "${exe#/}" "${alt#/}" \
-            && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
-    done
-}
-
+# Linux functions
 ##################################################
-function myfreebsdprocsigs()
-{
-    # Like mylinuxprocsigs, list running programs that are
-    #   DELETED   gone from disk, or its path can't be found
-    #   UNOWNED   not from a package or the base system
-    #   MODIFIED  changed since it was installed
-    # Packages (and pkgbase systems) are checked with pkg check. Other base
-    # programs are checked with freebsd-update IDS, which is slow and only works
-    # on releases kept up to date with freebsd-update. Jails are skipped.
-    local pid jid flags comm exe pkg text ids idsrun=""
-    local -a asroot=(sudo) pids exes
-    local -A verify
+if [[ "$(uname -s 2>/dev/null)" == Linux ]]
+then
 
-    if [[ "$(uname -s 2>/dev/null)" != FreeBSD ]]
-    then
-        echo "FAIL: myfreebsdprocsigs is for FreeBSD"
-        return 1
-    fi
-    (( EUID == 0 )) && asroot=()
-
-    # Host processes only (jail 0), skipping kernel processes (P_SYSTEM flag)
-    while read -r pid jid flags
-    do
-        (( jid == 0 && ! (0x$flags & 0x200) )) && pids+=("$pid")
-    done < <(ps -axo pid=,jid=,flags=)
-    mapfile -t exes < <("${asroot[@]}" procstat -h -b "${pids[@]}" 2>/dev/null |
-        while read -r pid comm _ exe
-        do
-            if [[ "$exe" == /* && -e "$exe" ]]
-            then
-                echo "$exe"
-            else
-                echo "(pid $pid: $comm)"
-            fi
-        done | sort -u)
-
-    for exe in "${exes[@]}"
-    do
-        if [[ "$exe" != /* ]]
+    ##
+    function patchdnf()
+    {
+        if ! command -v dnf >/dev/null 2>&1
         then
-            printf '%-9s %s\n' DELETED "$exe"
-            continue
+            echo "FAIL: dnf not found"
+            return 1
         fi
-        pkg="$(pkg which -q "$exe" 2>/dev/null)"
-        if [[ -n "$pkg" ]]
+        if uname -r 2>/dev/null |grep -qi amzn
         then
-            [[ -z "${verify[$pkg]+set}" ]] \
-                && verify[$pkg]="$("${asroot[@]}" pkg check -s "$pkg" 2>&1)"
-            text="${verify[$pkg]}"
+            dnf --refresh update -y --releasever=latest
         else
-            case "$exe" in
-                /bin/*|/sbin/*|/libexec/*|/rescue/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/lib/*) ;;
-                *)
-                    printf '%-9s %s\n' UNOWNED "$exe"
-                    continue
-                    ;;
-            esac
-            pkg=base
-            if [[ -z "$idsrun" ]]
-            then
-                idsrun=1
-                if ! ids="$("${asroot[@]}" freebsd-update --not-running-from-cron IDS 2>/dev/null)"
-                then
-                    echo "NOTE: base programs not checked: freebsd-update IDS failed"
-                    ids=""
-                fi
-            fi
-            text="$ids"
+            dnf --refresh update -y
         fi
-        _myprocsigs_listed "$text" "$exe" && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
-    done
+        command -v rpmconf >/dev/null 2>&1 || dnf install -y rpmconf
+        rpmconf -a
+        dnf needs-restarting
+    }
+
+    ##
+    function patchapt()
+    {
+        if ! command -v apt >/dev/null 2>&1
+        then
+            echo "FAIL: apt not found"
+            return 1
+        fi
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y
+        apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade -y
+        apt-get update -y
+        apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -y
+        apt-get update -y
+        apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" auto-remove -y
+        apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y
+        apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" clean -y
+        apt-file update
+        systemctl --failed
 }
 
-##################################################
-function myopenbsdprocsigs()
-{
-    # Like mylinuxprocsigs, list running programs that are
-    #   DELETED   gone from disk
-    #   UNOWNED   not from a package or the base system
-    #   MODIFIED  differs from the SHA-256 its package recorded
-    # OpenBSD doesn't reveal a running program's path, so each one is found by
-    # its inode (from fstat). Base programs have no recorded checksums, so they
-    # are only checked for being in a base directory.
-    local mount ino cmd pid dev exe pkg want have
-    local -a asroot=(sudo)
-    local -a dirs=(/bin /sbin /usr/bin /usr/sbin /usr/libexec /usr/X11R6/bin
-                   /usr/local/bin /usr/local/sbin /usr/local/libexec)
-    local -A where devof seen
+    ##
+    function mylinuxprocsigs()
+    {
+        # Linux programs aren't signed, so list running programs that are
+        #   DELETED   replaced on disk since they started (usually just needs a restart)
+        #   UNOWNED   not installed by any package
+        #   MODIFIED  changed since their package installed them
+        # Works with dpkg (apt), rpm (dnf/yum), and apk. Container processes are skipped.
+        local pm exe alt p pkg key
+        local -a asroot=(sudo) exes
+        local -A verify
 
-    if [[ "$(uname -s 2>/dev/null)" != OpenBSD ]]
-    then
-        echo "FAIL: myopenbsdprocsigs is for OpenBSD"
-        return 1
-    fi
-    (( EUID == 0 )) && asroot=()
-
-    # device:inode -> path for every file in the usual program directories
-    while read -r dev ino exe
-    do
-        [[ -z "${where[$dev:$ino]+set}" ]] && where[$dev:$ino]="$exe"
-    done < <(find "${dirs[@]}" -type f -exec stat -f '%d %i %N' {} + 2>/dev/null)
-
-    while read -r mount ino cmd pid
-    do
-        [[ -n "${seen[$mount:$ino]+set}" ]] && continue
-        seen[$mount:$ino]=1
-        [[ -z "${devof[$mount]+set}" ]] && devof[$mount]="$(stat -f %d "$mount")"
-        exe="${where[${devof[$mount]}:$ino]}"
-        [[ -z "$exe" ]] \
-            && exe="$("${asroot[@]}" find "$mount" -xdev -type f -inum "$ino" 2>/dev/null |head -n1)"
-        if [[ -z "$exe" ]]
+        if [[ "$(uname -s 2>/dev/null)" != Linux ]]
         then
-            printf '%-9s %s\n' DELETED "(pid $pid: $cmd)"
-            continue
+            echo "FAIL: mylinuxprocsigs is for Linux"
+            return 1
         fi
-
-        pkg="$(pkg_info -E "$exe" 2>/dev/null |head -n1)"
-        pkg="${pkg##*: }"
-        if [[ -z "$pkg" ]]
+        if command -v dpkg-query >/dev/null 2>&1 && [[ -s /var/lib/dpkg/status ]]
         then
-            case "$exe" in
-                /usr/local/*) ;;
-                /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/X11R6/*) continue ;;
-            esac
-            printf '%-9s %s\n' UNOWNED "$exe"
-            continue
+            pm=dpkg
+        elif command -v rpm >/dev/null 2>&1
+        then
+            pm=rpm
+        elif command -v apk >/dev/null 2>&1
+        then
+            pm=apk
+        else
+            echo "FAIL: no dpkg, rpm, or apk found"
+            return 1
         fi
+        (( EUID == 0 )) && asroot=()
 
-        # Find this file's @sha line in the package's packing list
-        want="$(awk -v f="$exe" '
-            $1 == "@cwd" { cwd = $2; sub(/\/+$/, "", cwd); next }
-            /^@(bin|file|lib|so|shlib|static-lib|man|info) / { cur = cwd "/" substr($0, index($0, " ") + 1); next }
-            !/^@/ { cur = cwd "/" $0; next }
-            $1 == "@sha" && cur == f { print $2; exit }' "/var/db/pkg/$pkg/+CONTENTS" 2>/dev/null)"
-        [[ -z "$want" ]] && continue
-        have="$("${asroot[@]}" sha256 -qb "$exe" 2>/dev/null)"
-        [[ "$have" != "$want" ]] && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
-    done < <("${asroot[@]}" fstat 2>/dev/null |awk '$4 == "text" {print $5, $6, $2, $3}')
-}
+        # One path per running program, only for processes in the host's mount namespace
+        # shellcheck disable=SC2016
+        mapfile -t exes < <("${asroot[@]}" sh -c '
+            m=$(readlink /proc/1/ns/mnt)
+            for d in /proc/[0-9]*
+            do
+                [ "$(readlink "$d/ns/mnt")" = "$m" ] && readlink "$d/exe"
+            done' 2>/dev/null | sort -u)
 
-##################################################
-function mynetbsdprocsigs()
-{
-    # Like mylinuxprocsigs, list running programs that are
-    #   DELETED   gone from disk, or its path can't be found
-    #   UNOWNED   not from a pkgsrc package or the base system
-    #   MODIFIED  changed since its pkgsrc package installed it
-    # Uses /proc, which must be mounted. pkgsrc programs are checked with
-    # pkg_admin check. Base programs have no recorded checksums, so they are
-    # only checked for being in a base directory.
-    local exe pkg
-    local -a asroot=(sudo) exes
-    local -A verify
-
-    if [[ "$(uname -s 2>/dev/null)" != NetBSD ]]
-    then
-        echo "FAIL: mynetbsdprocsigs is for NetBSD"
-        return 1
-    fi
-    if [[ ! -d /proc/1 ]]
-    then
-        echo "FAIL: /proc isn't mounted: run sudo mount_procfs procfs /proc"
-        return 1
-    fi
-    (( EUID == 0 )) && asroot=()
-
-    # One path per running program, skipping pid 0 (the kernel)
-    # shellcheck disable=SC2016
-    mapfile -t exes < <("${asroot[@]}" sh -c '
-        for d in /proc/[1-9]*
+        for exe in "${exes[@]}"
         do
-            [ -d "$d" ] || continue
-            readlink "$d/exe" 2>/dev/null || echo "(pid ${d#/proc/}: $(cat "$d/cmdline" 2>/dev/null |tr "\0" " "))"
-        done' | sort -u)
-
-    for exe in "${exes[@]}"
-    do
-        if [[ "$exe" != /* || ! -e "$exe" ]]
-        then
-            printf '%-9s %s\n' DELETED "$exe"
-            continue
-        fi
-        pkg="$(pkg_info -Fe "$exe" 2>/dev/null |head -n1)"
-        if [[ -z "$pkg" ]]
-        then
-            case "$exe" in
-                /bin/*|/sbin/*|/libexec/*|/rescue/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/games/*|/usr/X11R7/*) ;;
-                *) printf '%-9s %s\n' UNOWNED "$exe" ;;
-            esac
-            continue
-        fi
-        [[ -z "${verify[$pkg]+set}" ]] \
-            && verify[$pkg]="$("${asroot[@]}" pkg_admin check "$pkg" 2>&1)"
-        _myprocsigs_listed "${verify[$pkg]}" "$exe" && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
-    done
-}
-
-##################################################
-function myopenindianaprocsigs()
-{
-    # Like mylinuxprocsigs, list running programs that are
-    #   DELETED   gone from disk, or its path can't be found
-    #   UNOWNED   not installed by any IPS package
-    #   MODIFIED  changed since its package installed it (pkg verify)
-    # The whole OS is IPS packages, so base programs are checked too, and
-    # MODIFIED lines are followed by pkg verify's reasons (Hash, Mode, ...).
-    # Processes in other zones are skipped.
-    local zone pid class exe pkg verify why
-    local -a asroot=(sudo) pids exes pkgs
-    local -A owner
-
-    if ! uname -os 2>/dev/null |grep -qiE 'sunos|illumos'
-    then
-        echo "FAIL: myopenindianaprocsigs is for OpenIndiana"
-        return 1
-    fi
-    (( EUID == 0 )) && asroot=()
-
-    # This zone's processes, skipping kernel ones (class SYS)
-    zone="$(zonename 2>/dev/null || echo global)"
-    while read -r pid class
-    do
-        [[ "$class" != SYS ]] && pids+=("$pid")
-    done < <(ps -z "$zone" -o pid=,class=)
-    # shellcheck disable=SC2016
-    mapfile -t exes < <("${asroot[@]}" sh -c '
-        for p in "$@"
-        do
-            [ -d "/proc/$p" ] || continue
-            if t=$(ls -l "/proc/$p/path/a.out" 2>/dev/null)
+            if [[ "$exe" != /* || "$exe" == *" (deleted)" ]]
             then
-                echo "${t#* -> }"
-            else
-                echo "(pid $p: $(ps -o comm= -p "$p"))"
+                printf '%-9s %s\n' DELETED "$exe"
+                continue
             fi
-        done' sh "${pids[@]}" | sort -u)
+            # Merged /usr: the package may list /bin/x for /usr/bin/x
+            alt="${exe#/usr}"
 
-    # Owning package of each program, from one pass over all installed files
-    while IFS=$'\t' read -r exe pkg
-    do
-        owner[$exe]="$pkg"
-    done < <(pkg contents -H -o path,pkg.name -t file,hardlink 2>/dev/null |
-        awk 'NR == FNR { want[$0] = 1; next } ("/" $1) in want { print "/" $1 "\t" $2 }' \
-            <(printf '%s\n' "${exes[@]}") -)
+            pkg=""
+            for p in "$exe" "$alt"
+            do
+                case "$pm" in
+                    dpkg)
+                        pkg="$(dpkg-query -S "$p" 2>/dev/null |grep -v '^diversion' |head -n1)"
+                        pkg="${pkg%%: /*}"
+                        pkg="${pkg%%,*}"
+                        ;;
+                    rpm)
+                        pkg="$(rpm -qf --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n' "$p" 2>/dev/null)" \
+                            || pkg=""
+                        pkg="${pkg%%$'\n'*}"
+                        ;;
+                    apk)
+                        pkg="$(apk info --who-owns "$p" 2>/dev/null)"
+                        [[ "$pkg" == *" is owned by "* ]] && pkg="${pkg##* is owned by }" || pkg=""
+                        ;;
+                esac
+                [[ -n "$pkg" ]] && break
+            done
+            if [[ -z "$pkg" ]]
+            then
+                printf '%-9s %s\n' UNOWNED "$exe"
+                continue
+            fi
 
-    # Verify every owning package in one run, since pkg verify's planning alone takes minutes
-    mapfile -t pkgs < <(printf '%s\n' "${owner[@]}" |sort -u)
-    (( ${#pkgs[@]} )) && verify="$("${asroot[@]}" pkg verify "${pkgs[@]}" 2>&1)"
+            # Verify each package (apk: each directory) once
+            case "$pm" in
+                apk) key="${exe%/*}" ;;
+                *)   key="$pkg" ;;
+            esac
+            if [[ -z "${verify[$key]+set}" ]]
+            then
+                case "$pm" in
+                    dpkg) verify[$key]="$("${asroot[@]}" dpkg --verify "$pkg" 2>/dev/null)" ;;
+                    rpm)  verify[$key]="$("${asroot[@]}" rpm -V "$pkg" 2>/dev/null)" ;;
+                    apk)  verify[$key]="$("${asroot[@]}" apk audit --system "$key" 2>/dev/null)" ;;
+                esac
+            fi
 
-    for exe in "${exes[@]}"
-    do
-        if [[ "$exe" != /* || ! -e "$exe" ]]
+            # Any verify line naming this program means it differs from the package
+            _myprocsigs_listed "${verify[$key]}" "$exe" "$alt" "${exe#/}" "${alt#/}" \
+                && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+        done
+    }
+
+    ##
+    function modpkgcheck()
+    {
+        # List loaded kernel modules that weren't installed by any package, or
+        # that changed since their package installed them.
+        # Works with dpkg (apt), rpm (dnf/yum), and apk.
+        local pm module filename real p pkg key
+        local found=0 modified=0
+        local -a modules
+        local -A verify
+
+        if [[ ! -r /proc/modules ]]
         then
-            printf '%-9s %s\n' DELETED "$exe"
-            continue
+            echo "FAIL: modpkgcheck needs Linux /proc/modules"
+            return 1
         fi
-        pkg="${owner[$exe]}"
-        if [[ -z "$pkg" ]]
+        if ! command -v modinfo >/dev/null 2>&1
         then
-            printf '%-9s %s\n' UNOWNED "$exe"
-            continue
+            echo "FAIL: no modinfo found"
+            return 1
         fi
-        # The ERROR lines under this program's "file:" (or "hardlink:") line
-        why="$(awk -v rel="${exe#/}" '
-            { line = $0; sub(/^[ \t]+/, "", line) }
-            line ~ /^pkg:\/\// || line ~ /^[a-z]+: / { hit = (line == "file: " rel || line == "hardlink: " rel); next }
-            hit && line ~ /^ERROR: / { print "          " substr(line, 8) }' <<<"$verify")"
-        if [[ -n "$why" ]]
+        if command -v dpkg-query >/dev/null 2>&1 && [[ -s /var/lib/dpkg/status ]]
         then
-            printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
-            printf '%s\n' "$why"
+            pm=dpkg
+        elif command -v rpm >/dev/null 2>&1
+        then
+            pm=rpm
+        elif command -v apk >/dev/null 2>&1
+        then
+            pm=apk
+        else
+            echo "FAIL: no dpkg, rpm, or apk found"
+            return 1
         fi
-    done
-}
+
+        # Read /proc/modules, since busybox lsmod may not print a header line
+        mapfile -t modules < <(awk '{print $1}' /proc/modules)
+        for module in "${modules[@]}"
+        do
+            filename="$(modinfo "$module" 2>/dev/null |awk '/^filename:/ {print $2; exit}')"
+            if [[ "$filename" != /* ]]
+            then
+                # Loaded from a file that's gone, or from outside /lib/modules
+                echo "ALERT=\"No file for module=$module\""
+                found=$((found+1))
+                continue
+            fi
+            # Follow symlinks (e.g. weak-updates), and with merged /usr the
+            # package may list /lib/modules/x for /usr/lib/modules/x
+            real="$(readlink -f "$filename")"
+            [[ -n "$real" ]] || real="$filename"
+
+            pkg=""
+            for p in "$filename" "$real" "${real#/usr}"
+            do
+                case "$pm" in
+                    dpkg)
+                        pkg="$(dpkg-query -S "$p" 2>/dev/null |grep -v '^diversion' |head -n1)"
+                        pkg="${pkg%%: /*}"
+                        pkg="${pkg%%,*}"
+                        ;;
+                    rpm)
+                        pkg="$(rpm -qf --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n' "$p" 2>/dev/null)" \
+                            || pkg=""
+                        pkg="${pkg%%$'\n'*}"
+                        ;;
+                    apk)
+                        pkg="$(apk info --who-owns "$p" 2>/dev/null)"
+                        [[ "$pkg" == *" is owned by "* ]] && pkg="${pkg##* is owned by }" || pkg=""
+                        ;;
+                esac
+                [[ -n "$pkg" ]] && break
+            done
+            if [[ -z "$pkg" ]]
+            then
+                echo "ALERT=\"No package for module=$module filename=$real\""
+                found=$((found+1))
+                continue
+            fi
+
+            # Verify each package (apk: each directory) once. Module files are
+            # world-readable, so this doesn't need root.
+            case "$pm" in
+                apk) key="${p%/*}" ;;
+                *)   key="$pkg" ;;
+            esac
+            if [[ -z "${verify[$key]+set}" ]]
+            then
+                case "$pm" in
+                    dpkg) verify[$key]="$(dpkg --verify "$pkg" 2>/dev/null)" ;;
+                    rpm)  verify[$key]="$(rpm -V "$pkg" 2>/dev/null)" ;;
+                    apk)  verify[$key]="$(apk audit --system "$key" 2>/dev/null)" ;;
+                esac
+            fi
+
+            # Any verify line naming this module means it differs from the package
+            if _myprocsigs_listed "${verify[$key]}" "$filename" "$real" "${real#/usr}" \
+                "${filename#/}" "${real#/}" "${real#/usr/}"
+            then
+                echo "ALERT=\"Modified module=$module filename=$real package=$pkg\""
+                modified=$((modified+1))
+            fi
+        done
+        (( found > 0 )) && echo "Found $found modules without packages"
+        (( modified > 0 )) && echo "Found $modified modules modified since install"
+        if (( found == 0 && modified == 0 ))
+        then
+            echo "All kernel modules have packages and match them"
+        fi
+    }
+
+fi
 
 ##################################################
 function myunixclam()
@@ -1604,8 +1442,8 @@ function myunixclam()
     conf="$confdir/freshclam.conf"
     if [[ ! -s "$conf" ]]
     then
-      # Leave paths and DatabaseOwner to this build's defaults
-      "${asroot[@]}" tee "$conf" >/dev/null <<EOF
+        # Leave paths and DatabaseOwner to this build's defaults
+        "${asroot[@]}" tee "$conf" >/dev/null <<EOF
 DatabaseMirror    database.clamav.net
 MaxAttempts       5
 CompressLocalDatabase no
@@ -1665,45 +1503,44 @@ EOF
         "${paths[@]}"
 }
 
-
 ##################################################
 function highlight()
 {
-  if [ -z "$1" ]
-  then
-    echo "Usage: <command> | highlight <pattern> [color]" >&2
-    echo -e "Colors:\n\tred\n\tgreen\n\tyellow\n\tblue\n\tpurple\n\tcyan\n\twhite\n\tbg-red\n\tbg-yellow"
+    if [ -z "$1" ]
+    then
+        echo "Usage: <command> | highlight <pattern> [color]" >&2
+        echo -e "Colors:\n\tred\n\tgreen\n\tyellow\n\tblue\n\tpurple\n\tcyan\n\twhite\n\tbg-red\n\tbg-yellow"
 
-    return 1
-  fi
-  local pattern="$1"
-  local color="${2:-cyan}"
-  local code
-  local grepcmd
+        return 1
+    fi
+    local pattern="$1"
+    local color="${2:-cyan}"
+    local code
+    local grepcmd
 
-  case "$color" in
-    red)     code="1;31" ;;
-    green)   code="1;32" ;;
-    yellow)  code="1;33" ;;
-    blue)    code="1;34" ;;
-    magenta|purple) code="1;35" ;;
-    cyan)    code="1;36" ;;
-    white)   code="1;37" ;;
-    # Background colors
-    bg-red)    code="41;97;1" ;;
-    bg-yellow) code="43;30;1" ;;
-    *)       code="$color" ;; # Fallback: allows raw ANSI like "0;35" or "48;5;208"
-  esac
+    case "$color" in
+        red)     code="1;31" ;;
+        green)   code="1;32" ;;
+        yellow)  code="1;33" ;;
+        blue)    code="1;34" ;;
+        magenta|purple) code="1;35" ;;
+        cyan)    code="1;36" ;;
+        white)   code="1;37" ;;
+        # Background colors
+        bg-red)    code="41;97;1" ;;
+        bg-yellow) code="43;30;1" ;;
+        *)       code="$color" ;; # Fallback: allows raw ANSI like "0;35" or "48;5;208"
+    esac
 
-  if grep --help 2>&1 |grep -q color \
-  && [[ "${PIPESTATUS[1]}" == 0 ]] \
-  && command -v ggrep >/dev/null 2>&1
-  then
-     grepcmd='ggrep'
-  else
-     grepcmd='grep'
-  fi
-  GREP_COLORS="mt=$code" $grepcmd -E --color=always "$pattern|$"
+    if grep --help 2>&1 |grep -q color \
+    && [[ "${PIPESTATUS[1]}" == 0 ]] \
+    && command -v ggrep >/dev/null 2>&1
+    then
+        grepcmd='ggrep'
+    else
+        grepcmd='grep'
+    fi
+    GREP_COLORS="mt=$code" $grepcmd -E --color=always "$pattern|$"
 }
 
 ##################################################
@@ -1732,7 +1569,7 @@ function mybeep()
 }
 
 ##################################################
-function urldecode() 
+function urldecode()
 {
     local url_encoded="${1//+/ }"
     printf '%b\n' "${url_encoded//%/\\x}"
@@ -1764,7 +1601,7 @@ function tferaws()
     local res
 
     if [[ -n "$1" ]]
-       then
+    then
         accountname="$1"
     else
         echo "FAIL: must provide account name as arg 1"
@@ -1772,24 +1609,24 @@ function tferaws()
     fi
 
     if [[ -z "$AWS_REGION" ]]
-       then
+    then
         echo "FAIL: AWS_REGION is not set"
         return 1
     fi
 
     if [[ -z "$AWS_PROFILE" ]]
-       then
+    then
         echo "FAIL: AWS_PROFILE is not set"
         return 1
     fi
 
     for res in $(terraformer import aws list |grep -v identitystore)
-       do
-      terraformer import aws \
-        --resources="${res}" \
-        --regions="${AWS_REGION}" \
-        --profile="${AWS_PROFILE}" \
-        --path-pattern="${accountname}/${AWS_REGION}/${res}"
+    do
+        terraformer import aws \
+            --resources="${res}" \
+            --regions="${AWS_REGION}" \
+            --profile="${AWS_PROFILE}" \
+            --path-pattern="${accountname}/${AWS_REGION}/${res}"
     done
 }
 
@@ -1802,31 +1639,32 @@ function tferazure()
     local res
 
     if [[ -n "$1" ]]
-       then
-      accountname="$1"
+    then
+        accountname="$1"
     else
-      echo "FAIL: must provide account name as arg 1"
-      return 1
+        echo "FAIL: must provide account name as arg 1"
+        return 1
     fi
 
     subscription_id="$(az account show --query id -o tsv)"
     subscription_name="$(az account show --query name -o tsv)"
 
     if [[ -z "$subscription_id" ]]
-       then
-      echo "FAIL: unable to determine active Azure subscription"
-      return 1
+    then
+        echo "FAIL: unable to determine active Azure subscription"
+        return 1
     fi
 
     export ARM_SUBSCRIPTION_ID="$subscription_id"
 
     for res in $(terraformer import azure list)
-       do
-      terraformer import azure \
-        --resources="${res}" \
-        --path-pattern="${accountname}/${subscription_name}/${res}"
+    do
+        terraformer import azure \
+            --resources="${res}" \
+            --path-pattern="${accountname}/${subscription_name}/${res}"
     done
 }
+
 ##################################################
 function tferk8s()
 {
@@ -1836,24 +1674,24 @@ function tferk8s()
     context="$(kubectl config current-context)"
 
     if [[ -z "$context" ]]
-       then
-      echo "FAIL: unable to determine current Kubernetes context"
-      return 1
+    then
+        echo "FAIL: unable to determine current Kubernetes context"
+        return 1
     fi
 
     export KUBE_CONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}"
     export KUBE_CTX="$context"
 
     for res in $(terraformer import kubernetes list)
-       do
-      terraformer import kubernetes \
-        --resources="${res}" \
-        --path-pattern="${context}/${res}"
+    do
+        terraformer import kubernetes \
+            --resources="${res}" \
+            --path-pattern="${context}/${res}"
     done
 }
 
 ##################################################
-function mycheckov() 
+function mycheckov()
 {
     terraform init
     terraform plan --out delme.binary
@@ -1864,28 +1702,27 @@ function mycheckov()
 ##################################################
 function failalarm()
 {
-  mkbanner "FAIL" 2>/dev/null
-  local reg
-  local bold
-  local bak
-  local reset
-  local name
-  local i
-  for i in {30..37}
-  do
-    reg="\e[${i}m"
-    bold="\e[${i};1m"
-    bak="\e[$((i+10))m"
-    reset="\e[0m"
-    name="FAIL"
-    printf "${bold}%-10s${reset} ${bak}%-10s${reset} " \
-      "$name" "$name"
-  done
-  echo ''
-  mkbanner "FAIL" 2>/dev/null
-  false
+    mkbanner "FAIL" 2>/dev/null
+    local reg
+    local bold
+    local bak
+    local reset
+    local name
+    local i
+    for i in {30..37}
+    do
+        reg="\e[${i}m"
+        bold="\e[${i};1m"
+        bak="\e[$((i+10))m"
+        reset="\e[0m"
+        name="FAIL"
+        printf "${bold}%-10s${reset} ${bak}%-10s${reset} " \
+            "$name" "$name"
+    done
+    echo ''
+    mkbanner "FAIL" 2>/dev/null
+    false
 }
-
 
 ##################################################
 function mkbanner()
@@ -1896,7 +1733,7 @@ function mkbanner()
     count=$(echo "$display" |wc -c |awk '{print $1}')
     local printnum=$(( ( ${COLUMNS:-$(tput cols)} / 2 ) - ( count / 2 ) - 2 ))
 
-    printf '%*s' $printnum ' '|tr ' ' "$chars" 
+    printf '%*s' $printnum ' '|tr ' ' "$chars"
     echo -n "  $display  "
     printf '%*s' $printnum ' '|tr ' ' "$chars"
     echo ''
@@ -2221,7 +2058,7 @@ function mysysinfo()
 }
 
 ##################################################
-if uname -os 2>/dev/null |grep -q Cygwin 
+if uname -os 2>/dev/null |grep -q Cygwin
 then
     alias pbcopy='cat > /dev/clipboard'
     alias pbpaste='cat /dev/clipboard'
@@ -2242,18 +2079,18 @@ then
     ##
     function cyginstall()
     {
-      if ! cd /tmp/
-      then
-        echo "FAIL: no /tmp/"
-        return 1
-      fi
-      if [[ ! -f /tmp/setup-x86_64.exe ]]
-      then
-        wget https://cygwin.com/setup-x86_64.exe
-      fi
-      chmod 700 /tmp/setup-x86_64.exe
-      /tmp/setup-x86_64.exe -q -P "$@"
-      cd - || return
+        if ! cd /tmp/
+        then
+            echo "FAIL: no /tmp/"
+            return 1
+        fi
+        if [[ ! -f /tmp/setup-x86_64.exe ]]
+        then
+            wget https://cygwin.com/setup-x86_64.exe
+        fi
+        chmod 700 /tmp/setup-x86_64.exe
+        /tmp/setup-x86_64.exe -q -P "$@"
+        cd - || return
     }
 
     ##
@@ -2271,7 +2108,7 @@ then
 
         # Update extensions
         /cygdrive/c/'Program Files'/'Microsoft VS Code'/bin/code \
-               --update-extensions || return 1
+            --update-extensions || return 1
 
         # Remove obsolete extensions
         if [[ -f "$obsolete" ]]
@@ -2282,7 +2119,7 @@ then
                 case "$ext" in
                     ""|.|..|*/*) continue ;;
                 esac
-    
+
                 if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
                 then
                     echo "Removing obsolete extension: $ext"
@@ -2314,24 +2151,154 @@ then
     }
 
     ##
+    # shellcheck disable=SC2120 # --loldrivers is for interactive use
+    function winmodcheck()
+    {
+        # Like modpkgcheck, but Windows drivers come with signatures, not packages.
+        # Alerts on loaded drivers without a valid signature, and on settings that
+        # let unsigned or blocklisted drivers load. Drivers signed by someone other
+        # than Windows itself are listed for review. --loldrivers also downloads
+        # the loldrivers.io list and alerts on known vulnerable or malicious drivers.
+        local lol=""
+        case "$1" in
+            "") ;;
+            --loldrivers) lol=1 ;;
+            *)
+                echo "Usage: winmodcheck [--loldrivers]"
+                return 1
+                ;;
+        esac
+        if ! id -G | grep -qw 544
+        then
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
+        fi
+        # shellcheck disable=SC2016
+        WINMODCHECK_LOL="$lol" /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+            $ErrorActionPreference = "SilentlyContinue"
+            $script:found = 0
+            $script:third = 0
+            function Alert([string]$m) { "ALERT=`"$m`""; $script:found++ }
+            function Note([string]$m) { "NOTE=`"$m`"" }
+            # Kernel paths look like \SystemRoot\..., \??\C:\..., \Windows\..., or System32\...
+            function Norm([string]$p) {
+                $p = $p.Trim([char]34)
+                if ($p -match "^\\SystemRoot\\") { return $env:SystemRoot + $p.Substring(11) }
+                if ($p.StartsWith("\??\")) { return $p.Substring(4) }
+                if ($p -match "^\\") { return $env:SystemDrive + $p }
+                if ($p -notmatch "^[A-Za-z]:\\") { return $env:SystemRoot + "\" + $p }
+                return $p
+            }
+
+            # Settings that let unsigned or blocklisted drivers load
+            $bcd = bcdedit /enum "{current}" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Note "Boot options not checked: bcdedit failed"
+            } else {
+                foreach ($o in "testsigning", "nointegritychecks", "debug") {
+                    if ($bcd -match "^$o\s+Yes") { Alert "Boot option $o is on" }
+                }
+            }
+            try {
+                if (-not (Confirm-SecureBootUEFI -ErrorAction Stop)) { Alert "Secure Boot is off" }
+            } catch {
+                Note "Secure Boot not checked: $($_.Exception.Message)"
+            }
+            $dg = Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard
+            if ($dg -and $dg.SecurityServicesRunning -notcontains 2) {
+                if ($dg.SecurityServicesConfigured -contains 2) {
+                    Alert "Memory Integrity (HVCI) is configured but not running"
+                } else {
+                    Note "Memory Integrity (HVCI) is off"
+                }
+            }
+            $bl = (Get-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config).VulnerableDriverBlocklistEnable
+            if ($bl -eq 0) { Alert "Microsoft vulnerable driver blocklist is off" }
+
+            # Every loaded kernel image (including ntoskrnl.exe and hal.dll), plus running driver services
+            $paths = @{}
+            try {
+                Add-Type -Namespace WinModCheck -Name Psapi -MemberDefinition "
+                    [DllImport(`"psapi.dll`")] public static extern bool EnumDeviceDrivers(IntPtr[] bases, int cb, out int needed);
+                    [DllImport(`"psapi.dll`", CharSet = CharSet.Unicode)] public static extern int GetDeviceDriverFileNameW(IntPtr b, System.Text.StringBuilder name, int size);"
+                $need = 0
+                [void][WinModCheck.Psapi]::EnumDeviceDrivers($null, 0, [ref]$need)
+                $bases = New-Object IntPtr[] ($need / [IntPtr]::Size)
+                if ([WinModCheck.Psapi]::EnumDeviceDrivers($bases, $need, [ref]$need)) {
+                    foreach ($b in $bases) {
+                        $sb = New-Object System.Text.StringBuilder 1024
+                        if ([WinModCheck.Psapi]::GetDeviceDriverFileNameW($b, $sb, 1024) -gt 0) { $paths[(Norm $sb.ToString())] = 1 }
+                    }
+                }
+            } catch {}
+            if ($paths.Count -eq 0) { Note "EnumDeviceDrivers gave no names, so only driver services are checked" }
+            Get-CimInstance Win32_SystemDriver | Where-Object { $_.State -eq "Running" -and $_.PathName } |
+                ForEach-Object { $paths[(Norm $_.PathName)] = 1 }
+
+            # SHA-256 of every sample in the loldrivers.io list
+            $lol = @{}
+            if ($env:WINMODCHECK_LOL) {
+                try {
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    $json = (Invoke-WebRequest -UseBasicParsing -Uri https://www.loldrivers.io/api/drivers.json).Content
+                    foreach ($m in [regex]::Matches($json, "`"SHA256`"\s*:\s*`"([0-9A-Fa-f]{64})`"")) { $lol[$m.Groups[1].Value] = 1 }
+                } catch {}
+                if ($lol.Count -eq 0) {
+                    Note "Known vulnerable drivers not checked: loldrivers.io list not downloaded"
+                } else {
+                    Note "Checking against $($lol.Count) loldrivers.io hashes"
+                }
+            }
+
+            foreach ($p in ($paths.Keys | Sort-Object)) {
+                # Crash dump and hibernation copies of storage drivers (dump_x.sys,
+                # hiber_x.sys) only exist in memory, so check the driver they copy
+                if ((Split-Path -Leaf $p) -match "^(dump|hiber)_(.+)$") {
+                    $orig = (Split-Path -Parent $p) + "\" + $Matches[2]
+                    if ($paths.ContainsKey($orig)) { continue }
+                    if (Test-Path -LiteralPath $orig) { $p = $orig }
+                }
+                if (-not (Test-Path -LiteralPath $p)) { Alert "No file for driver=$p"; continue }
+                if ($lol.Count -and $lol.ContainsKey((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash)) {
+                    Alert "Known vulnerable driver=$p (loldrivers.io)"
+                }
+                $s = Get-AuthenticodeSignature -LiteralPath $p
+                if ($s.Status -ne "Valid") { Alert "Bad signature for driver=$p status=$($s.Status)"; continue }
+                # Third-party drivers are often signed by Microsoft too, as its Hardware Compatibility Publisher
+                $signer = $s.SignerCertificate.GetNameInfo("SimpleName", $false)
+                if ($signer -in "Microsoft Windows", "Microsoft Windows Publisher", "Microsoft Corporation") { continue }
+                $script:third++
+                Note "Third-party driver=$p signer=$signer company=$("$((Get-Item -LiteralPath $p).VersionInfo.CompanyName)".Trim())"
+            }
+
+            if ($script:found) {
+                "Found $($script:found) driver problems"
+            } elseif ($script:third) {
+                "No driver problems found, and $($script:third) third-party drivers are validly signed"
+            } else {
+                "No driver problems found, and every loaded driver is signed by Windows"
+            }' | tr -d '\r'
+    }
+
+    ##
     function patchwinget()
     {
         if ! command -v winget >/dev/null 2>&1
         then
-          echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
-          return 1
+            echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
+            return 1
         fi
         winget upgrade --all --include-unknown --accept-source-agreements \
             --accept-package-agreements --disable-interactivity
     }
-    
+
     ##
     function mywinpatchall()
     {
         if ! id -G | grep -qw 544
         then
-          echo "FAIL: run Cygwin as Administrator"
-          return 1
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
         fi
         mkbanner "patchmssigs"
         patchmssigs 2>&1 |tee /tmp/patchmssigs.log
@@ -2355,6 +2322,9 @@ then
         windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
         mkbanner "mywinprocsigs"
         mywinprocsigs 2>&1 |tee /tmp/mywinprocsigs.log
+        mkbanner "winmodcheck"
+        # shellcheck disable=SC2119 # runs without --loldrivers
+        winmodcheck 2>&1 |tee /tmp/winmodcheck.log
     }
 
     ##
@@ -2378,48 +2348,48 @@ then
         chmod 700 setup-x86_64.exe
         ./setup-x86_64.exe -q --upgrade-also
     }
-    
+
     ##
     function patchmsstore()
     {
         if command -v winget >/dev/null 2>&1
         then
-          winget upgrade --source msstore --accept-source-agreements
-          winget upgrade --all --include-unknown --source msstore \
-              --accept-source-agreements --accept-package-agreements \
-              --disable-interactivity
+            winget upgrade --source msstore --accept-source-agreements
+            winget upgrade --all --include-unknown --source msstore \
+                --accept-source-agreements --accept-package-agreements \
+                --disable-interactivity
         else
-          echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
+            echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
         fi
         if id -G | grep -qw 544
         then
-          powershell.exe -NoProfile -Command \
-              'Get-CimInstance -Namespace root/cimv2/mdm/dmmap -ClassName MDM_EnterpriseModernAppManagement_AppManagement01 | Invoke-CimMethod -MethodName UpdateScanMethod | Out-Null' \
-              && echo "Store update scan started.  Updates install in the background"
+            powershell.exe -NoProfile -Command \
+                'Get-CimInstance -Namespace root/cimv2/mdm/dmmap -ClassName MDM_EnterpriseModernAppManagement_AppManagement01 | Invoke-CimMethod -MethodName UpdateScanMethod | Out-Null' \
+                && echo "Store update scan started.  Updates install in the background"
         else
-          echo "SKIPPING Store update scan.  Run Cygwin as Administrator"
+            echo "SKIPPING Store update scan.  Run Cygwin as Administrator"
         fi
     }
-        
+
     ##
     function windiskdefrag()
     {
         if id -G | grep -qw 544
         then
-          defrag.exe /C /O /U /V
+            defrag.exe /C /O /U /V
         else
-          powershell.exe -NoProfile -Command \
-              "Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -Command defrag.exe /C /O /U /V; pause'"
+            powershell.exe -NoProfile -Command \
+                "Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -Command defrag.exe /C /O /U /V; pause'"
         fi
     }
-    
+
     ##
     function wincleanit()
     {
         if ! id -G | grep -qw 544
         then
-          echo "FAIL: run Cygwin as Administrator"
-          return 1
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
         fi
         patchchoco
         patchmsstore
@@ -2427,12 +2397,12 @@ then
         windiskdefrag
         if ! command -v sdelete >/dev/null 2>&1
         then
-          echo "SKIPPING sdelete.  Install it with: choco install sdelete"
+            echo "SKIPPING sdelete.  Install it with: choco install sdelete"
         elif [[ "$(powershell.exe -NoProfile -Command '(Get-PhysicalDisk | Where-Object DeviceId -eq (Get-Partition -DriveLetter C).DiskNumber).MediaType' | tr -d '\r')" == "SSD" ]]
         then
-          echo "SKIPPING sdelete.  C: is an SSD"
+            echo "SKIPPING sdelete.  C: is an SSD"
         else
-          sdelete -accepteula -z c:
+            sdelete -accepteula -z c:
         fi
     }
 
@@ -2441,8 +2411,8 @@ then
     {
         if ! id -G | grep -qw 544
         then
-          echo "FAIL: run Cygwin as Administrator"
-          return 1
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
         fi
         local clamdir conf data wdata db winhome t
         local -a targets paths
@@ -2459,7 +2429,7 @@ then
         wdata="$(cygpath -w "$data")"
         if [[ ! -s "$conf" ]]
         then
-          cat >"$conf" <<EOF
+            cat >"$conf" <<EOF
 DatabaseDirectory $wdata\database
 CVDCertsDirectory $(cygpath -w "$clamdir")\certs
 UpdateLogFile     $wdata\log\freshclam.log
@@ -2509,36 +2479,499 @@ EOF
 
     ##
     function winps() {
-      tasklist.exe /FO TABLE
+        tasklist.exe /FO TABLE
     }
 
     ##
     function smem() {
-      tasklist.exe /FO TABLE /NH | sort -k5 -n -r 
+        tasklist.exe /FO TABLE /NH | sort -k5 -n -r
     }
 
     ##
     function free() {
-      powershell.exe -NoProfile -Command "Get-CimInstance Win32_OperatingSystem | Select-Object @{Name='TotalGB'; Expression={'{0:N2}' -f (\$_.TotalVisibleMemorySize / 1MB)}}, @{Name='FreeGB'; Expression={'{0:N2}' -f (\$_.FreePhysicalMemory / 1MB)}}"
+        powershell.exe -NoProfile -Command "Get-CimInstance Win32_OperatingSystem | Select-Object @{Name='TotalGB'; Expression={'{0:N2}' -f (\$_.TotalVisibleMemorySize / 1MB)}}, @{Name='FreeGB'; Expression={'{0:N2}' -f (\$_.FreePhysicalMemory / 1MB)}}"
     }
 
 fi
 
+##################################################
+# FreeBSD, OpenBSD, NetBSD aliases and functions
 ##################################################
 if uname -s 2>/dev/null|grep -q BSD
 then
     alias free="top -d1 |grep -E '^Mem:|^Memory:'|head -1"
     alias patchfreebsd='sudo pkg update; echo -e "y\ny\n" |sudo pkg upgrade'
     alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
+
+    ##
+    function freebsdmodpkgcheck()
+    {
+        # Like modpkgcheck, list loaded kernel files (the kernel and its modules)
+        # that aren't from a package or the base system, or that changed since
+        # they were installed. Checked like myfreebsdprocsigs: packages (and
+        # pkgbase systems) with pkg check, other base files with freebsd-update IDS,
+        # which only works on releases kept up to date with freebsd-update, not
+        # custom kernels.
+        local kerndir path module pkg text ids idsrun="" havepkg=""
+        local found=0 modified=0
+        local -a asroot=(sudo) paths
+        local -A verify
+
+        if [[ "$(uname -s 2>/dev/null)" != FreeBSD ]]
+        then
+            echo "FAIL: freebsdmodpkgcheck is for FreeBSD"
+            return 1
+        fi
+        (( EUID == 0 )) && asroot=()
+        # pkg -N checks for pkg without the bootstrap's install prompt
+        pkg -N >/dev/null 2>&1 && havepkg=1
+
+        # The directory the running kernel booted from, e.g. /boot/kernel
+        kerndir="$(sysctl -n kern.bootfile 2>/dev/null)"
+        kerndir="${kerndir%/*}"
+        [[ -n "$kerndir" ]] || kerndir=/boot/kernel
+
+        # kldstat -v ends each file's line with its path in parentheses
+        mapfile -t paths < <(kldstat -v 2>/dev/null |
+            awk '$1 ~ /^[0-9]+$/ && $NF ~ /^\(\/.*\)$/ { print substr($NF, 2, length($NF) - 2) }' |sort -u)
+        if (( ${#paths[@]} == 0 ))
+        then
+            echo "FAIL: kldstat -v listed no files"
+            return 1
+        fi
+
+        for path in "${paths[@]}"
+        do
+            module="${path##*/}"
+            if [[ ! -e "$path" ]]
+            then
+                echo "ALERT=\"No file for module=$module filename=$path\""
+                found=$((found+1))
+                continue
+            fi
+            pkg=""
+            [[ -n "$havepkg" ]] && pkg="$(pkg which -q "$path" 2>/dev/null)"
+            if [[ -n "$pkg" ]]
+            then
+                [[ -z "${verify[$pkg]+set}" ]] \
+                    && verify[$pkg]="$("${asroot[@]}" pkg check -s "$pkg" 2>&1)"
+                text="${verify[$pkg]}"
+            else
+                if [[ "$path" != "$kerndir"/* ]]
+                then
+                    echo "ALERT=\"No package for module=$module filename=$path\""
+                    found=$((found+1))
+                    continue
+                fi
+                pkg=base
+                if [[ -z "$idsrun" ]]
+                then
+                    idsrun=1
+                    if ! ids="$("${asroot[@]}" freebsd-update --not-running-from-cron IDS 2>/dev/null)"
+                    then
+                        echo "NOTE: base modules not checked: freebsd-update IDS failed"
+                        ids=""
+                    fi
+                fi
+                text="$ids"
+            fi
+            if _myprocsigs_listed "$text" "$path"
+            then
+                echo "ALERT=\"Modified module=$module filename=$path package=$pkg\""
+                modified=$((modified+1))
+            fi
+        done
+        (( found > 0 )) && echo "Found $found modules without packages"
+        (( modified > 0 )) && echo "Found $modified modules modified since install"
+        if (( found == 0 && modified == 0 ))
+        then
+            echo "All kernel modules have packages and match them"
+        fi
+    }
+
+    ##
+    function myfreebsdprocsigs()
+    {
+        # Like mylinuxprocsigs, list running programs that are
+        #   DELETED   gone from disk, or its path can't be found
+        #   UNOWNED   not from a package or the base system
+        #   MODIFIED  changed since it was installed
+        # Packages (and pkgbase systems) are checked with pkg check. Other base
+        # programs are checked with freebsd-update IDS, which is slow and only works
+        # on releases kept up to date with freebsd-update. Jails are skipped.
+        local pid jid flags comm exe pkg text ids idsrun=""
+        local -a asroot=(sudo) pids exes
+        local -A verify
+
+        if [[ "$(uname -s 2>/dev/null)" != FreeBSD ]]
+        then
+            echo "FAIL: myfreebsdprocsigs is for FreeBSD"
+            return 1
+        fi
+        (( EUID == 0 )) && asroot=()
+
+        # Host processes only (jail 0), skipping kernel processes (P_SYSTEM flag)
+        while read -r pid jid flags
+        do
+            (( jid == 0 && ! (0x$flags & 0x200) )) && pids+=("$pid")
+        done < <(ps -axo pid=,jid=,flags=)
+        mapfile -t exes < <("${asroot[@]}" procstat -h -b "${pids[@]}" 2>/dev/null |
+            while read -r pid comm _ exe
+            do
+                if [[ "$exe" == /* && -e "$exe" ]]
+                then
+                    echo "$exe"
+                else
+                    echo "(pid $pid: $comm)"
+                fi
+            done | sort -u)
+
+        for exe in "${exes[@]}"
+        do
+            if [[ "$exe" != /* ]]
+            then
+                printf '%-9s %s\n' DELETED "$exe"
+                continue
+            fi
+            pkg="$(pkg which -q "$exe" 2>/dev/null)"
+            if [[ -n "$pkg" ]]
+            then
+                [[ -z "${verify[$pkg]+set}" ]] \
+                    && verify[$pkg]="$("${asroot[@]}" pkg check -s "$pkg" 2>&1)"
+                text="${verify[$pkg]}"
+            else
+                case "$exe" in
+                    /bin/*|/sbin/*|/libexec/*|/rescue/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/lib/*) ;;
+                    *)
+                        printf '%-9s %s\n' UNOWNED "$exe"
+                        continue
+                        ;;
+                esac
+                pkg=base
+                if [[ -z "$idsrun" ]]
+                then
+                    idsrun=1
+                    if ! ids="$("${asroot[@]}" freebsd-update --not-running-from-cron IDS 2>/dev/null)"
+                    then
+                        echo "NOTE: base programs not checked: freebsd-update IDS failed"
+                        ids=""
+                    fi
+                fi
+                text="$ids"
+            fi
+            _myprocsigs_listed "$text" "$exe" && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+        done
+    }
+
+    ##
+    function myopenbsdprocsigs()
+    {
+        # Like mylinuxprocsigs, list running programs that are
+        #   DELETED   gone from disk
+        #   UNOWNED   not from a package or the base system
+        #   MODIFIED  differs from the SHA-256 its package recorded
+        # OpenBSD doesn't reveal a running program's path, so each one is found by
+        # its inode (from fstat). Base programs have no recorded checksums, so they
+        # are only checked for being in a base directory.
+        local mount ino cmd pid dev exe pkg want have
+        local -a asroot=(sudo)
+        local -a dirs=(/bin /sbin /usr/bin /usr/sbin /usr/libexec /usr/X11R6/bin
+                       /usr/local/bin /usr/local/sbin /usr/local/libexec)
+        local -A where devof seen
+
+        if [[ "$(uname -s 2>/dev/null)" != OpenBSD ]]
+        then
+            echo "FAIL: myopenbsdprocsigs is for OpenBSD"
+            return 1
+        fi
+        (( EUID == 0 )) && asroot=()
+
+        # device:inode -> path for every file in the usual program directories
+        while read -r dev ino exe
+        do
+            [[ -z "${where[$dev:$ino]+set}" ]] && where[$dev:$ino]="$exe"
+        done < <(find "${dirs[@]}" -type f -exec stat -f '%d %i %N' {} + 2>/dev/null)
+
+        while read -r mount ino cmd pid
+        do
+            [[ -n "${seen[$mount:$ino]+set}" ]] && continue
+            seen[$mount:$ino]=1
+            [[ -z "${devof[$mount]+set}" ]] && devof[$mount]="$(stat -f %d "$mount")"
+            exe="${where[${devof[$mount]}:$ino]}"
+            [[ -z "$exe" ]] \
+                && exe="$("${asroot[@]}" find "$mount" -xdev -type f -inum "$ino" 2>/dev/null |head -n1)"
+            if [[ -z "$exe" ]]
+            then
+                printf '%-9s %s\n' DELETED "(pid $pid: $cmd)"
+                continue
+            fi
+
+            pkg="$(pkg_info -E "$exe" 2>/dev/null |head -n1)"
+            pkg="${pkg##*: }"
+            if [[ -z "$pkg" ]]
+            then
+                case "$exe" in
+                    /usr/local/*) ;;
+                    /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/X11R6/*) continue ;;
+                esac
+                printf '%-9s %s\n' UNOWNED "$exe"
+                continue
+            fi
+
+            # Find this file's @sha line in the package's packing list
+            want="$(awk -v f="$exe" '
+                $1 == "@cwd" { cwd = $2; sub(/\/+$/, "", cwd); next }
+                /^@(bin|file|lib|so|shlib|static-lib|man|info) / { cur = cwd "/" substr($0, index($0, " ") + 1); next }
+                !/^@/ { cur = cwd "/" $0; next }
+                $1 == "@sha" && cur == f { print $2; exit }' "/var/db/pkg/$pkg/+CONTENTS" 2>/dev/null)"
+            [[ -z "$want" ]] && continue
+            have="$("${asroot[@]}" sha256 -qb "$exe" 2>/dev/null)"
+            [[ "$have" != "$want" ]] && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+        done < <("${asroot[@]}" fstat 2>/dev/null |awk '$4 == "text" {print $5, $6, $2, $3}')
+    }
+
+    ##
+    function mynetbsdprocsigs()
+    {
+        # Like mylinuxprocsigs, list running programs that are
+        #   DELETED   gone from disk, or its path can't be found
+        #   UNOWNED   not from a pkgsrc package or the base system
+        #   MODIFIED  changed since its pkgsrc package installed it
+        # Uses /proc, which must be mounted. pkgsrc programs are checked with
+        # pkg_admin check. Base programs have no recorded checksums, so they are
+        # only checked for being in a base directory.
+        local exe pkg
+        local -a asroot=(sudo) exes
+        local -A verify
+
+        if [[ "$(uname -s 2>/dev/null)" != NetBSD ]]
+        then
+            echo "FAIL: mynetbsdprocsigs is for NetBSD"
+            return 1
+        fi
+        if [[ ! -d /proc/1 ]]
+        then
+            echo "FAIL: /proc isn't mounted: run sudo mount_procfs procfs /proc"
+            return 1
+        fi
+        (( EUID == 0 )) && asroot=()
+
+        # One path per running program, skipping pid 0 (the kernel)
+        # shellcheck disable=SC2016
+        mapfile -t exes < <("${asroot[@]}" sh -c '
+            for d in /proc/[1-9]*
+            do
+                [ -d "$d" ] || continue
+                readlink "$d/exe" 2>/dev/null || echo "(pid ${d#/proc/}: $(cat "$d/cmdline" 2>/dev/null |tr "\0" " "))"
+            done' | sort -u)
+
+        for exe in "${exes[@]}"
+        do
+            if [[ "$exe" != /* || ! -e "$exe" ]]
+            then
+                printf '%-9s %s\n' DELETED "$exe"
+                continue
+            fi
+            pkg="$(pkg_info -Fe "$exe" 2>/dev/null |head -n1)"
+            if [[ -z "$pkg" ]]
+            then
+                case "$exe" in
+                    /bin/*|/sbin/*|/libexec/*|/rescue/*|/usr/bin/*|/usr/sbin/*|/usr/libexec/*|/usr/games/*|/usr/X11R7/*) ;;
+                    *) printf '%-9s %s\n' UNOWNED "$exe" ;;
+                esac
+                continue
+            fi
+            [[ -z "${verify[$pkg]+set}" ]] \
+                && verify[$pkg]="$("${asroot[@]}" pkg_admin check "$pkg" 2>&1)"
+            _myprocsigs_listed "${verify[$pkg]}" "$exe" && printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+        done
+    }
 fi
 
+##################################################
+# SunOS/Illumos-specific aliases and functions
 ##################################################
 if uname -os 2>/dev/null|grep -qiE 'sunos|illumos'
 then
     alias free="top -d 2 |grep -E '^Memory:'|head -1"
     alias patchopenindiana='sudo pkg update'
+
+    ##
+    function openindianamodpkgcheck()
+    {
+        # Like modpkgcheck, list loaded kernel modules that weren't installed by
+        # any IPS package, or that changed since (pkg verify), followed by pkg
+        # verify's reasons. modinfo doesn't say which file a module came from, so
+        # every file with its name in the module path is checked.
+        local plat arch module f pkg verify why
+        local found=0 modified=0
+        local -a asroot=(sudo) modules pkgs
+        local -A cands owner
+
+        if ! uname -os 2>/dev/null |grep -qiE 'sunos|illumos'
+        then
+            echo "FAIL: openindianamodpkgcheck is for OpenIndiana"
+            return 1
+        fi
+        if [[ "$(zonename 2>/dev/null || echo global)" != global ]]
+        then
+            echo "FAIL: openindianamodpkgcheck needs the global zone"
+            return 1
+        fi
+        (( EUID == 0 )) && asroot=()
+        plat="$(uname -i 2>/dev/null)"
+        arch="$(isainfo -k 2>/dev/null)"
+        [[ -n "$arch" ]] || arch=amd64
+
+        # Module names (column 6), once each, since modinfo can list one more than once
+        mapfile -t modules < <(modinfo 2>/dev/null |awk 'NR > 1 && NF >= 6 { print $6 }' |sort -u)
+        if (( ${#modules[@]} == 0 ))
+        then
+            echo "FAIL: modinfo listed no modules"
+            return 1
+        fi
+
+        # Every module file for this kernel's ISA, e.g. /kernel/drv/amd64/e1000g
+        for f in /platform/"$plat"/kernel/{,*/}"$arch"/* /kernel/{,*/}"$arch"/* /usr/kernel/{,*/}"$arch"/*
+        do
+            [[ -f "$f" ]] && cands[${f##*/}]+="$f"$'\n'
+        done
+
+        # Owning package of each file, from one pass over all installed files
+        while IFS=$'\t' read -r f pkg
+        do
+            owner[$f]="$pkg"
+        done < <(pkg contents -H -o path,pkg.name -t file,hardlink 2>/dev/null |
+            awk 'NR == FNR { want[$0] = 1; next } ("/" $1) in want { print "/" $1 "\t" $2 }' \
+                <(printf '%s' "${cands[@]}") -)
+
+        # Verify every owning package in one run, since pkg verify's planning alone takes minutes
+        mapfile -t pkgs < <(printf '%s\n' "${owner[@]}" |sort -u)
+        (( ${#pkgs[@]} )) && verify="$("${asroot[@]}" pkg verify "${pkgs[@]}" 2>&1)"
+
+        for module in "${modules[@]}"
+        do
+            # krtld is linked into unix
+            [[ "$module" == krtld ]] && continue
+            if [[ -z "${cands[$module]}" ]]
+            then
+                echo "ALERT=\"No file for module=$module\""
+                found=$((found+1))
+                continue
+            fi
+            while IFS= read -r f
+            do
+                [[ -n "$f" ]] || continue
+                pkg="${owner[$f]}"
+                if [[ -z "$pkg" ]]
+                then
+                    echo "ALERT=\"No package for module=$module filename=$f\""
+                    found=$((found+1))
+                    continue
+                fi
+                # The ERROR lines under this file's "file:" (or "hardlink:") line
+                why="$(awk -v rel="${f#/}" '
+                    { line = $0; sub(/^[ \t]+/, "", line) }
+                    line ~ /^pkg:\/\// || line ~ /^[a-z]+: / { hit = (line == "file: " rel || line == "hardlink: " rel); next }
+                    hit && line ~ /^ERROR: / { print "          " substr(line, 8) }' <<<"$verify")"
+                if [[ -n "$why" ]]
+                then
+                    echo "ALERT=\"Modified module=$module filename=$f package=$pkg\""
+                    printf '%s\n' "$why"
+                    modified=$((modified+1))
+                fi
+            done <<<"${cands[$module]}"
+        done
+        (( found > 0 )) && echo "Found $found modules without packages"
+        (( modified > 0 )) && echo "Found $modified modules modified since install"
+        if (( found == 0 && modified == 0 ))
+        then
+            echo "All kernel modules have packages and match them"
+        fi
+    }
+
+    ##
+    function myopenindianaprocsigs()
+    {
+        # Like mylinuxprocsigs, list running programs that are
+        #   DELETED   gone from disk, or its path can't be found
+        #   UNOWNED   not installed by any IPS package
+        #   MODIFIED  changed since its package installed it (pkg verify)
+        # The whole OS is IPS packages, so base programs are checked too, and
+        # MODIFIED lines are followed by pkg verify's reasons (Hash, Mode, ...).
+        # Processes in other zones are skipped.
+        local zone pid class exe pkg verify why
+        local -a asroot=(sudo) pids exes pkgs
+        local -A owner
+
+        if ! uname -os 2>/dev/null |grep -qiE 'sunos|illumos'
+        then
+            echo "FAIL: myopenindianaprocsigs is for OpenIndiana"
+            return 1
+        fi
+        (( EUID == 0 )) && asroot=()
+
+        # This zone's processes, skipping kernel ones (class SYS)
+        zone="$(zonename 2>/dev/null || echo global)"
+        while read -r pid class
+        do
+            [[ "$class" != SYS ]] && pids+=("$pid")
+        done < <(ps -z "$zone" -o pid=,class=)
+        # shellcheck disable=SC2016
+        mapfile -t exes < <("${asroot[@]}" sh -c '
+            for p in "$@"
+            do
+                [ -d "/proc/$p" ] || continue
+                if t=$(ls -l "/proc/$p/path/a.out" 2>/dev/null)
+                then
+                    echo "${t#* -> }"
+                else
+                    echo "(pid $p: $(ps -o comm= -p "$p"))"
+                fi
+            done' sh "${pids[@]}" | sort -u)
+
+        # Owning package of each program, from one pass over all installed files
+        while IFS=$'\t' read -r exe pkg
+        do
+            owner[$exe]="$pkg"
+        done < <(pkg contents -H -o path,pkg.name -t file,hardlink 2>/dev/null |
+            awk 'NR == FNR { want[$0] = 1; next } ("/" $1) in want { print "/" $1 "\t" $2 }' \
+                <(printf '%s\n' "${exes[@]}") -)
+
+        # Verify every owning package in one run, since pkg verify's planning alone takes minutes
+        mapfile -t pkgs < <(printf '%s\n' "${owner[@]}" |sort -u)
+        (( ${#pkgs[@]} )) && verify="$("${asroot[@]}" pkg verify "${pkgs[@]}" 2>&1)"
+
+        for exe in "${exes[@]}"
+        do
+            if [[ "$exe" != /* || ! -e "$exe" ]]
+            then
+                printf '%-9s %s\n' DELETED "$exe"
+                continue
+            fi
+            pkg="${owner[$exe]}"
+            if [[ -z "$pkg" ]]
+            then
+                printf '%-9s %s\n' UNOWNED "$exe"
+                continue
+            fi
+            # The ERROR lines under this program's "file:" (or "hardlink:") line
+            why="$(awk -v rel="${exe#/}" '
+                { line = $0; sub(/^[ \t]+/, "", line) }
+                line ~ /^pkg:\/\// || line ~ /^[a-z]+: / { hit = (line == "file: " rel || line == "hardlink: " rel); next }
+                hit && line ~ /^ERROR: / { print "          " substr(line, 8) }' <<<"$verify")"
+            if [[ -n "$why" ]]
+            then
+                printf '%-9s %s (%s)\n' MODIFIED "$exe" "$pkg"
+                printf '%s\n' "$why"
+            fi
+        done
+    }
+
 fi
 
+##################################################
+# macOS-specific aliases and functions
 ##################################################
 if uname -s 2>/dev/null|grep -q Darwin
 then
@@ -2560,15 +2993,15 @@ then
     {
         if command -v mas >/dev/null 2>&1
         then
-          mas outdated
-          mas upgrade
+            mas outdated
+            mas upgrade
         else
-          echo "FAIL: SKIPPING mas.  Install mas with homebrew"
+            echo "FAIL: SKIPPING mas.  Install mas with homebrew"
         fi
         softwareupdate --list
         softwareupdate --install --all
     }
-    
+
     ##
     function patchmacports()
     {
@@ -2587,6 +3020,7 @@ then
         echo y|sudo port diagnose
         sudo chmod -R go+rX /opt/local/{Library,bin,sbin,lib,libexec,share,include}
     }
+
     ##
     function patchhomebrew()
     {
@@ -2622,7 +3056,7 @@ then
 
         # Update extensions
         /Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin/code \
-               --update-extensions || return 1
+            --update-extensions || return 1
 
         # Gracefully quit VS Code
         osascript -e 'tell application "Visual Studio Code" to quit' || return 1
@@ -2642,7 +3076,7 @@ then
                 case "$ext" in
                     ""|.|..|*/*) continue ;;
                 esac
-    
+
                 if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
                 then
                     echo "Removing obsolete extension: $ext"
@@ -2650,7 +3084,7 @@ then
                 fi
             done
         fi
-    
+
         # Restart VS Code
         [[ "$isrunning" == 1 ]] && open -a "Visual Studio Code"
     }
@@ -2664,6 +3098,99 @@ then
             return 1
         fi
         osqueryi --list "SELECT DISTINCT p.path FROM processes AS p JOIN signature AS s ON p.path = s.path WHERE s.signed = 0 ORDER BY p.path;"
+    }
+
+    ##
+    function macmodcheck()
+    {
+        # Like modpkgcheck, but macOS kexts come from signed kernel collections,
+        # not packages. Apple's are in the boot and system collections on the
+        # sealed system volume, so they're covered while SIP and Authenticated
+        # Root are on (their bundles on disk are unsigned stubs). Third-party
+        # kexts can only load from the auxiliary collection, and are checked
+        # with codesign. System extensions run outside the kernel, but are
+        # listed for review.
+        local text id path k team found=0 thirdparty=0
+        local -a ids
+
+        if ! command -v kmutil >/dev/null 2>&1
+        then
+            echo "FAIL: macmodcheck needs kmutil (macOS 11 or later)"
+            return 1
+        fi
+
+        text="$(csrutil status 2>/dev/null)"
+        text="${text%%$'\n'*}"
+        if [[ "$text" != *"status: enabled." ]]
+        then
+            echo "ALERT=\"SIP is not fully enabled: ${text#*status: }\""
+            found=$((found+1))
+        fi
+        if text="$(csrutil authenticated-root status 2>/dev/null)" \
+        && [[ "$text" != *"status: enabled" ]]
+        then
+            echo "ALERT=\"Authenticated Root is not enabled: ${text#*status: }\""
+            found=$((found+1))
+        fi
+
+        # Bundle id of each kext in the auxiliary collection: the field before "(version)"
+        mapfile -t ids < <(kmutil showloaded --list-only --collection aux 2>/dev/null |
+            awk '{ for (i = 2; i <= NF; i++) if ($i ~ /^\(.*\)$/) { print $(i-1); break } }' |sort -u)
+
+        for id in "${ids[@]}"
+        do
+            # kextfind misses kexts inside apps, but their staged copies are found
+            path="$(kextfind -b "$id" 2>/dev/null |head -n1)"
+            if [[ -z "$path" ]]
+            then
+                while IFS= read -r k
+                do
+                    if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+                        "$k/Contents/Info.plist" 2>/dev/null)" == "$id" ]]
+                    then
+                        path="$k"
+                        break
+                    fi
+                done < <(find /Library/StagedExtensions -name '*.kext' -prune 2>/dev/null)
+            fi
+            if [[ -z "$path" ]]
+            then
+                echo "ALERT=\"No bundle found for kext=$id\""
+                found=$((found+1))
+                continue
+            fi
+            thirdparty=$((thirdparty+1))
+            # Not --strict, which also fails on harmless extended attributes
+            if ! codesign --verify --deep "$path" >/dev/null 2>&1
+            then
+                echo "ALERT=\"Bad signature for kext=$id path=$path\""
+                found=$((found+1))
+                continue
+            fi
+            team="$(codesign -dv "$path" 2>&1 |awk -F= '$1 == "TeamIdentifier" { print $2 }')"
+            if [[ -z "$team" || "$team" == "not set" ]]
+            then
+                echo "ALERT=\"Ad-hoc signed kext=$id path=$path\""
+                found=$((found+1))
+                continue
+            fi
+            echo "NOTE=\"Third-party kext=$id team=$team path=$path\""
+        done
+
+        systemextensionsctl list 2>/dev/null |awk -F'\t' '
+            NF >= 6 && $3 != "teamID" {
+                id = $4; sub(/ \(.*/, "", id); state = $6; gsub(/[][]/, "", state)
+                printf "NOTE=\"System extension=%s team=%s state=%s\"\n", id, $3, state
+            }'
+
+        (( found > 0 )) && echo "Found $found kernel problems"
+        if (( found == 0 && thirdparty == 0 ))
+        then
+            echo "SIP and Authenticated Root on, and no third-party kexts loaded"
+        elif (( found == 0 ))
+        then
+            echo "SIP and Authenticated Root on, and $thirdparty third-party kexts are validly signed"
+        fi
     }
 
     ##
@@ -2685,6 +3212,8 @@ then
         myhbrewclam 2>&1 |tee /tmp/myhbrewclam.log
         mkbanner "mymacprocsigs"
         mymacprocsigs 2>&1 |tee /tmp/mymacprocsigs.log
+        mkbanner "macmodcheck"
+        macmodcheck 2>&1 |tee /tmp/macmodcheck.log
     }
 
     ##
@@ -2699,7 +3228,7 @@ then
         prefix="$(brew --prefix)"
         if [[ ! -s "$prefix/etc/clamav/freshclam.conf" ]]
         then
-          cat >"$prefix/etc/clamav/freshclam.conf" <<EOF
+            cat >"$prefix/etc/clamav/freshclam.conf" <<EOF
 DatabaseDirectory $prefix/var/lib/clamav
 CVDCertsDirectory $prefix/etc/clamav/certs
 UpdateLogFile     $prefix/var/log/freshclam.log
@@ -2734,7 +3263,7 @@ EOF
         local total_bytes swap
         total_bytes=$(sysctl -n hw.memsize) || return 1
         swap=$(sysctl -n vm.swapusage)
-    
+
         vm_stat | awk -v total="$total_bytes" -v swap="$swap" '
         NR == 1 {
             # Use the page size vm_stat reports so it always matches its counts
@@ -2756,11 +3285,11 @@ EOF
             cache  = (p["File-backed pages"] + p["Pages purgeable"]) * ps
             used   = app + wired + comp
             avail  = free_b + cache
-    
+
             # vm.swapusage looks like: total = 2048.00M  used = 1024.00M  free = 1024.00M
             n = split(swap, s, " ")
             st = s[3] + 0; su = s[6] + 0; sf = s[9] + 0
-    
+
             printf "%-6s %11s %11s %11s %11s %11s\n", "", "total", "used", "free", "cache", "available"
             printf "%-6s %10.2fG %10.2fG %10.2fG %10.2fG %10.2fG\n", "Mem:", \
                 total/gb, used/gb, free_b/gb, cache/gb, avail/gb
@@ -2784,7 +3313,7 @@ EOF
             size = $(NF-1); unit = $NF
             mb = (unit == "GB") ? size * 1024 : size
             printf "%.2f\t%s\n", mb, $0
-          }' \
+        }' \
         | sort -n \
         | cut -f2-
         return 0
