@@ -1,4 +1,4 @@
-# 20261018 Kirby
+# 20261019 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -108,6 +108,55 @@ fi
 ##################################################
 # Non-interactive shells (ssh host cmd, scp, rsync) only need the environment above
 [[ $- == *i* ]] || return
+
+##################################################
+# TAGGED JOBS
+# run_tag ingest ./fetch_data.sh
+# run_tag sync rsync -av /source /dest
+# 
+# list_tags
+# # ingest -> PID 41203 (Running)
+# # sync -> PID 41204 (Running)
+# 
+# kill_tag ingest
+##################################################
+declare -A TAGGED_JOBS
+
+# Usage: run_tag <tag> <command...>
+run_tag() {
+    local tag="$1"
+    shift
+    "$@" &
+    TAGGED_JOBS["$tag"]=$!
+    echo "Started '$tag' (PID: ${TAGGED_JOBS[$tag]})"
+}
+
+# Usage: kill_tag <tag> [signal]
+kill_tag() {
+    local tag="$1"
+    local sig="${2:-TERM}"
+    local pid="${TAGGED_JOBS[$tag]}"
+
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        kill -s "$sig" "$pid" && echo "Killed '$tag' (PID: $pid)"
+        unset "TAGGED_JOBS[$tag]"
+    else
+        echo "Tag '$tag' not found or process already stopped."
+        unset "TAGGED_JOBS[$tag]"
+    fi
+}
+
+# Usage: list_tags
+list_tags() {
+    for tag in "${!TAGGED_JOBS[@]}"; do
+        local pid="${TAGGED_JOBS[$tag]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "$tag -> PID $pid (Running)"
+        else
+            echo "$tag -> PID $pid (Terminated)"
+        fi
+    done
+}
 
 ##################################################
 if command -v bat >/dev/null 2>&1
@@ -241,6 +290,68 @@ export HISTCONTROL=ignoredups:erasedups:ignorespace
 shopt -s histappend
 shopt -s histverify
 shopt -s cmdhist
+
+##################################################
+function stopwatch()
+{
+    # Count up until Ctrl+C, printing a lap time and the split since the
+    # previous lap on each Enter.
+    # Runs no external commands in its loop. Bash 4+ updates every 0.1s
+    # (bash 3 once a second), and bash 5's EPOCHREALTIME keeps whole seconds
+    # exact, where SECONDS can make the first one short.
+    local start now elapsed time split key oldstty oldtrap tick=1 stop="" lap=1 last=0 icon=""
+
+    if [[ ! -t 0 || ! -t 1 ]]
+    then
+        echo "FAIL: stopwatch needs a terminal"
+        return 1
+    fi
+    (( BASH_VERSINFO[0] >= 4 )) && tick=0.1
+    case "${LC_ALL:-${LC_CTYPE:-$LANG}}" in
+        *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) icon="⏱  " ;;
+    esac
+
+    # Put back the terminal settings and any earlier Ctrl+C trap afterwards
+    oldstty="$(stty -g)"
+    oldtrap="$(trap -p INT)"
+    trap 'stop=1' INT
+    # Hide the cursor, and take keys one at a time without echoing them.
+    # min 1 makes read -t wait for a key instead of returning at once.
+    printf '\033[?25l'
+    stty -echo -icanon min 1 time 0
+
+    printf 'Stopwatch started. [Enter] = Lap, [Ctrl+C] = Stop\n'
+    # Microseconds, from EPOCHREALTIME (its decimal point varies by locale) or SECONDS
+    start="${EPOCHREALTIME//[!0-9]/}"
+    [[ -n "$start" ]] || start=$(( SECONDS * 1000000 ))
+    while [[ -z "$stop" ]]
+    do
+        now="${EPOCHREALTIME//[!0-9]/}"
+        [[ -n "$now" ]] || now=$(( SECONDS * 1000000 ))
+        elapsed=$(( (now - start) / 1000000 ))
+        printf -v time '%02d:%02d:%02d' $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
+        # \r goes to the start of the line, \033[K clears the rest of it
+        printf '\r\033[K%s%s' "$icon" "$time"
+        # Enter reads as an empty key with status 0. Timeouts and Ctrl+C fail.
+        if read -r -n 1 -t "$tick" key && [[ -z "$key" ]]
+        then
+            split=$(( elapsed - last ))
+            printf '\r\033[KLap %02d: %s (+%02d:%02d:%02d)\n' "$lap" "$time" \
+                $(( split / 3600 )) $(( split % 3600 / 60 )) $(( split % 60 ))
+            last=$elapsed
+            lap=$(( lap + 1 ))
+        fi
+    done
+
+    stty "$oldstty"
+    printf '\n\033[?25h'
+    if [[ -n "$oldtrap" ]]
+    then
+        eval "$oldtrap"
+    else
+        trap - INT
+    fi
+}
 
 ##################################################
 # PROMPT
@@ -796,17 +907,17 @@ function patchgem()
 ##################################################
 function patchmods()
 {
-    mkbanner "patchpip"
+    mkbanner "patchpip" '#' yellow
     patchpip 2>&1 |tee /tmp/patchpip.log
-    mkbanner "patchpipx"
+    mkbanner "patchpipx" '#' yellow
     patchpipx 2>&1 |tee /tmp/patchpipx.log
-    mkbanner "patchgem"
+    mkbanner "patchgem" '#' yellow
     patchgem 2>&1 |tee /tmp/patchgem.log
-    mkbanner "patchcpan"
+    mkbanner "patchcpan" '#' yellow
     patchcpan 2>&1 |tee /tmp/patchcpan.log
-    mkbanner "patchnpm"
+    mkbanner "patchnpm" '#' yellow
     patchnpm 2>&1 |tee /tmp/patchnpm.log
-    mkbanner "patchcargo"
+    mkbanner "patchcargo" '#' yellow
     patchcargo 2>&1 |tee /tmp/patchcargo.log
 }
 
@@ -1464,7 +1575,7 @@ EOF
     then
         echo "SKIPPING freshclam.  The freshclam daemon is already updating the database"
     else
-        "${asroot[@]}" nice "$freshclam" --show-progress -v
+        "${asroot[@]}" nice "$freshclam" --show-progress -v >/dev/null 2>&1
     fi
 
     targets=(
@@ -1491,6 +1602,7 @@ EOF
     fi
 
     log="${HOME}/.cache/clamscan.log"
+    rm -f "$log" >/dev/null 2>&1
     mkdir -p "${HOME}/.cache" || return 1
     # Rootless podman storage is huge and mostly unreadable by its owner
     nice "$clamscan" -r -i \
@@ -1500,7 +1612,9 @@ EOF
         --exclude-dir="^$HOME/\.local/share/containers" \
         --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
         --log="$log" \
-        "${paths[@]}"
+        "${paths[@]}" >/dev/null 2>&1
+    mkbanner "CLAMSCAN RESULTS" '=' yellow
+    cat "$log"
 }
 
 ##################################################
@@ -1702,7 +1816,7 @@ function mycheckov()
 ##################################################
 function failalarm()
 {
-    mkbanner "FAIL" 2>/dev/null
+    mkbanner "FAIL" '#' red
     local reg
     local bold
     local bak
@@ -1720,23 +1834,41 @@ function failalarm()
             "$name" "$name"
     done
     echo ''
-    mkbanner "FAIL" 2>/dev/null
+    mkbanner "FAIL" '#' red
     false
 }
 
 ##################################################
+# Usage: mkbanner [text] [char] [color]
+# color: black|red|green|yellow|blue|magenta|cyan|white (always bold)
 function mkbanner()
 {
     local display="${1:-BLAH}"
     local chars="${2:-#}"
+    local color="${3:-}"
+    local on='' off=''
     local count
+    case "$color" in
+        '')      ;;
+        black)   on=$'\e[30;1m' ;;
+        red)     on=$'\e[31;1m' ;;
+        green)   on=$'\e[32;1m' ;;
+        yellow)  on=$'\e[33;1m' ;;
+        blue)    on=$'\e[34;1m' ;;
+        magenta) on=$'\e[35;1m' ;;
+        cyan)    on=$'\e[36;1m' ;;
+        white)   on=$'\e[37;1m' ;;
+        *)       echo "mkbanner: unknown color '$color'" >&2 ;;
+    esac
+    [[ -n "$on" ]] && off=$'\e[0m'
     count=$(echo "$display" |wc -c |awk '{print $1}')
     local printnum=$(( ( ${COLUMNS:-$(tput cols)} / 2 ) - ( count / 2 ) - 2 ))
 
+    printf '%s' "$on"
     printf '%*s' $printnum ' '|tr ' ' "$chars"
     echo -n "  $display  "
     printf '%*s' $printnum ' '|tr ' ' "$chars"
-    echo ''
+    printf '%s\n' "$off"
 }
 
 ##################################################
@@ -2300,29 +2432,29 @@ then
             echo "FAIL: run Cygwin as Administrator"
             return 1
         fi
-        mkbanner "patchmssigs"
+        mkbanner "patchmssigs" '#' yellow
         patchmssigs 2>&1 |tee /tmp/patchmssigs.log
-        mkbanner "patchchoco"
+        mkbanner "patchchoco" '#' yellow
         patchchoco 2>&1 |tee /tmp/patchchoco.log
-        mkbanner "patchwinvs"
+        mkbanner "patchwinvs" '#' yellow
         patchwinvs 2>&1 |tee /tmp/patchwinvs.log
-        mkbanner "patchcygwin"
+        mkbanner "patchcygwin" '#' yellow
         patchcygwin 2>&1 |tee /tmp/patchcygwin.log
-        mkbanner "patchmsstore"
+        mkbanner "patchmsstore" '#' yellow
         patchmsstore 2>&1 |tee /tmp/patchmsstore.log
-        mkbanner "patchwinget"
+        mkbanner "patchwinget" '#' yellow
         patchwinget 2>&1 |tee /tmp/patchwinget.log
-        mkbanner "patchmods"
+        mkbanner "patchmods" '#' yellow
         patchmods 2>&1 |tee /tmp/patchmods.log
-        mkbanner "mywinclam"
+        mkbanner "mywinclam" '#' yellow
         mywinclam 2>&1 |tee /tmp/mywinclam.log
-        mkbanner "windiskclean"
+        mkbanner "windiskclean" '#' yellow
         windiskclean 2>&1 |tee /tmp/windiskclean.log
-        mkbanner "windiskdefrag"
+        mkbanner "windiskdefrag" '#' yellow
         windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
-        mkbanner "mywinprocsigs"
+        mkbanner "mywinprocsigs" '#' yellow
         mywinprocsigs 2>&1 |tee /tmp/mywinprocsigs.log
-        mkbanner "winmodcheck"
+        mkbanner "winmodcheck" '#' yellow
         # shellcheck disable=SC2119 # runs without --loldrivers
         winmodcheck 2>&1 |tee /tmp/winmodcheck.log
     }
@@ -2466,7 +2598,8 @@ EOF
             return 1
         fi
 
-        nice "$clamdir/freshclam.exe" --config-file="$(cygpath -w "$conf")" --show-progress -v
+        rm -f "$wdata\\log\\clamscan.log" >/dev/null 2>&1
+        nice "$clamdir/freshclam.exe" --config-file="$(cygpath -w "$conf")" --show-progress -v >/dev/null 2>&1
         nice "$clamdir/clamscan.exe" -r -i \
             ${db:+--database="$db"} \
             --detect-pua=no \
@@ -2474,7 +2607,9 @@ EOF
             --exclude-dir='[\\/]OneDrive' \
             --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
             --log="$wdata\\log\\clamscan.log" \
-            "${paths[@]}"
+            "${paths[@]}" >/dev/null 2>&1
+        mkbanner "CLAM SCAN LOG" '=' yellow
+        cat "$wdata\\log\\clamscan.log"
     }
 
     ##
@@ -3196,23 +3331,23 @@ then
     ##
     function mymacpatchall()
     {
-        mkbanner "patchmacvs"
+        mkbanner "patchmacvs" '#' yellow
         patchmacvs 2>&1 |tee /tmp/patchmacvs.log
-        mkbanner "patchmac"
+        mkbanner "patchmac" '#' yellow
         patchmac 2>&1 |tee /tmp/patchmac.log
-        mkbanner "patchhomebrew"
+        mkbanner "patchhomebrew" '#' yellow
         patchhomebrew 2>&1 |tee /tmp/patchhomebrew.log
-        mkbanner "patchmacports"
+        mkbanner "patchmacports" '#' yellow
         patchmacports 2>&1 |tee /tmp/patchmacports.log
-        mkbanner "patchpkgin"
+        mkbanner "patchpkgin" '#' yellow
         patchpkgin 2>&1 |tee /tmp/patchpkgin.log
-        mkbanner "patchmods"
+        mkbanner "patchmods" '#' yellow
         patchmods
-        mkbanner "myhbrewclam"
+        mkbanner "myhbrewclam" '#' yellow
         myhbrewclam 2>&1 |tee /tmp/myhbrewclam.log
-        mkbanner "mymacprocsigs"
+        mkbanner "mymacprocsigs" '#' yellow
         mymacprocsigs 2>&1 |tee /tmp/mymacprocsigs.log
-        mkbanner "macmodcheck"
+        mkbanner "macmodcheck" '#' yellow
         macmodcheck 2>&1 |tee /tmp/macmodcheck.log
     }
 
@@ -3224,7 +3359,8 @@ then
             echo "FAIL: NO CLAMAV: RUN brew install -y clamav"
             return 1
         fi
-        local prefix
+        local prefix t
+        local -a targets paths
         prefix="$(brew --prefix)"
         if [[ ! -s "$prefix/etc/clamav/freshclam.conf" ]]
         then
@@ -3240,21 +3376,38 @@ MaxAttempts       5
 CompressLocalDatabase no
 EOF
         fi
-        nice "$prefix/bin/freshclam" --show-progress -v
+        nice "$prefix/bin/freshclam" --show-progress -v >/dev/null 2>&1
+
+        targets=(
+            ${VIRTUAL_ENV:+"$VIRTUAL_ENV"}
+            "${HOME}"/Downloads
+            "${HOME}"/Documents
+            "${HOME}"/.cpan
+            "${HOME}"/.local
+            "${HOME}"/.npm
+            "${HOME}"/.vscode
+            "${HOME}"/Library/'Application Support'/Firefox/Profiles/*/extensions
+        )
+        for t in "${targets[@]}"
+        do
+            [[ -e "$t" ]] && paths+=("$t")
+        done
+        if (( ${#paths[@]} == 0 ))
+        then
+            echo "FAIL: nothing to scan"
+            return 1
+        fi
+
+        rm -f "$prefix/var/log/clamscan.log" >/dev/null 2>&1
         nice "$prefix/bin/clamscan" -r -i \
             --detect-pua=no \
             --fail-if-cvd-older-than=7 \
             --exclude-dir="^$HOME/Library/(CloudStorage|Mobile Documents|Caches)" \
             --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
             --log="$prefix/var/log/clamscan.log" \
-            ${VIRTUAL_ENV:+"$VIRTUAL_ENV"} \
-            "${HOME}"/Downloads \
-            "${HOME}"/Documents \
-            "${HOME}"/.cpan \
-            "${HOME}"/.local \
-            "${HOME}"/.npm \
-            "${HOME}"/.vscode \
-            "${HOME}"/Library/'Application Support'/Firefox/Profiles/*/extensions
+            "${paths[@]}" >/dev/null 2>&1
+        mkbanner "CLAM SCAN LOG" '=' yellow
+        cat "$prefix/var/log/clamscan.log"
     }
 
     ##
@@ -3319,8 +3472,6 @@ EOF
         return 0
     }
 fi
-
-##################################################
 
 ##################################################
 [[ -e /etc/bashrc.mk.local ]] && . /etc/bashrc.mk.local
