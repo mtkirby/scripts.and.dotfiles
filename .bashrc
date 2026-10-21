@@ -1,4 +1,4 @@
-# 20261020 Kirby
+# 20261021 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -902,9 +902,9 @@ function patchgem()
 
     gem update --system
     gem update
-    echo "######## gem outdated report"
+    mkbanner "gem outdated report" '.' yellow
     gem outdated
-    echo "######################################"
+    mkbanner '' '.' yellow
 }
 
 ##################################################
@@ -941,7 +941,7 @@ function patchpip()
     "$py" -m pip_review --auto --continue-on-fail
     for pkg in $("$py" -m pip list --outdated | tail -n +3 | awk '{print $1}')
     do
-        echo "#################### $pkg"
+        mkbanner "Upgrading $pkg" '.' yellow
         "$py" -m pip install -U --force-reinstall --ignore-requires-python "$pkg"
     done
     if [[ -d ~/Library/Caches/pip ]]
@@ -949,9 +949,9 @@ function patchpip()
         echo 'Deleting ~/Library/Caches/pip'
         rm -rf ~/Library/Caches/pip >/dev/null 2>&1
     fi
-    echo "######## pip list --outdated report"
+    mkbanner 'pip list --outdated report' '.' yellow
     "$py" -m pip list --outdated
-    echo "######################################"
+    mkbanner '' '.' yellow
 }
 
 ##################################################
@@ -963,14 +963,14 @@ function patchpipx()
     then
         found=1
         pipx upgrade-all
-        echo "######## pipx list --short report"
+        mkbanner 'pipx list --short report' '.' yellow
         pipx list --short
     fi
     if command -v uv >/dev/null 2>&1
     then
         found=1
         uv tool upgrade --all
-        echo "######## uv tool list report"
+        mkbanner 'uv tool list report' '.' yellow
         uv tool list
     fi
     if (( ! found ))
@@ -1119,12 +1119,12 @@ function patchcpan()
     "$pbin/cpan" -u
     for mod in $("$perl" "$outdated" -p)
     do
-        echo "#################### $mod"
+        mkbanner "Upgrading $mod" '.' yellow
         "$pbin/cpan" -f -i "$mod"
     done
     for mod in $("$perl" "$outdated" --verbose | awk '{print $4}')
     do
-        echo "#################### $mod"
+        mkbanner "Upgrading $mod" '.' yellow
         "$pbin/cpan" -f -i "$mod"
     done
 
@@ -1143,9 +1143,9 @@ function patchcpan()
             rm -rf "$dir" >/dev/null 2>&1
         fi
     done
-    echo "######## cpan-outdated --verbose report"
+    mkbanner "cpan-outdated --verbose report" '.' yellow
     "$perl" "$outdated" --verbose
-    echo "######################################"
+    mkbanner '' '.' yellow
 }
 
 ##################################################
@@ -1159,9 +1159,9 @@ function patchnpm()
     npm install -g npm@latest
     npm outdated -g
     npm update -g
-    echo "######## npm outdated -g report"
+    mkbanner "npm outdated -g report" '.' yellow
     npm outdated -g
-    echo "######################################"
+    mkbanner '' '.' yellow
 }
 
 ##################################################
@@ -1192,9 +1192,9 @@ function patchcargo()
             cargo install --locked "$crate" || cargo install "$crate"
         done
     fi
-    echo "######## cargo install --list report"
+    mkbanner "cargo install --list report" '.' yellow
     cargo install --list
-    echo "######################################"
+    mkbanner '' '.' yellow
 }
 
 ##################################################
