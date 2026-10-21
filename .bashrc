@@ -978,7 +978,6 @@ function patchpipx()
         echo "FAIL: neither pipx nor uv found"
         return 1
     fi
-    echo "######################################"
 }
 
 ##################################################
