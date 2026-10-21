@@ -2236,6 +2236,7 @@ then
             echo "FAIL: no /tmp/"
             return 1
         fi
+        mkbanner "Cygwin Package Install" '.' yellow
         if [[ ! -f /tmp/setup-x86_64.exe ]]
         then
             wget https://cygwin.com/setup-x86_64.exe
@@ -2259,6 +2260,7 @@ then
         fi
 
         # Update extensions
+        mkbanner "VS Code Extension Update" '.' yellow
         /cygdrive/c/'Program Files'/'Microsoft VS Code'/bin/code \
             --update-extensions || return 1
 
@@ -2284,13 +2286,16 @@ then
     ##
     function patchmssigs()
     {
+        mkbanner "Microsoft Defender Signature Update" '.' yellow
         /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command "Get-MpComputerStatus | Select-Object AntivirusSignatureVersion, AntivirusSignatureLastUpdated"
         /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command "Update-MpSignature"
+        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command "Get-MpComputerStatus | Select-Object AntivirusSignatureVersion, AntivirusSignatureLastUpdated"
     }
 
     ##
     function mywinprocsigs()
     {
+        mkbanner "Running Processes Without Valid Authenticode Signature" '.' yellow
         # List running programs without a valid Authenticode signature.
         # Run as Administrator, or other users' and system process paths are hidden.
         # shellcheck disable=SC2016
@@ -2306,6 +2311,7 @@ then
     # shellcheck disable=SC2120 # --loldrivers is for interactive use
     function winmodcheck()
     {
+        mkbanner "Windows Driver Signature Check" '.' yellow
         # Like modpkgcheck, but Windows drivers come with signatures, not packages.
         # Alerts on loaded drivers without a valid signature, and on settings that
         # let unsigned or blocklisted drivers load. Drivers signed by someone other
@@ -2440,6 +2446,7 @@ then
             echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
             return 1
         fi
+        mkbanner "winget upgrade --all" '.' yellow
         winget upgrade --all --include-unknown --accept-source-agreements \
             --accept-package-agreements --disable-interactivity
     }
@@ -2506,7 +2513,9 @@ then
     {
         if command -v winget >/dev/null 2>&1
         then
+            mkbanner "winget upgrade --source msstore" '.' yellow
             winget upgrade --source msstore --accept-source-agreements
+            mkbanner "winget upgrade --all --source msstore" '.' yellow
             winget upgrade --all --include-unknown --source msstore \
                 --accept-source-agreements --accept-package-agreements \
                 --disable-interactivity
@@ -2515,6 +2524,7 @@ then
         fi
         if id -G | grep -qw 544
         then
+            mkbanner "Store update scan" '.' yellow
             powershell.exe -NoProfile -Command \
                 'Get-CimInstance -Namespace root/cimv2/mdm/dmmap -ClassName MDM_EnterpriseModernAppManagement_AppManagement01 | Invoke-CimMethod -MethodName UpdateScanMethod | Out-Null' \
                 && echo "Store update scan started.  Updates install in the background"
@@ -2530,6 +2540,7 @@ then
         then
             defrag.exe /C /O /U /V
         else
+            mkbanner "Disk Defragmentation" '.' yellow
             powershell.exe -NoProfile -Command \
                 "Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile -Command defrag.exe /C /O /U /V; pause'"
         fi
@@ -2543,9 +2554,13 @@ then
             echo "FAIL: run Cygwin as Administrator"
             return 1
         fi
+        mkbanner "Chocolatey Packages" '#' yellow
         patchchoco
+        mkbanner "MS Store Packages" '#' yellow
         patchmsstore
+        mkbanner "Disk Cleanup" '#' yellow
         windiskclean
+        mkbanner "Disk Defragmentation" '#' yellow
         windiskdefrag
         if ! command -v sdelete >/dev/null 2>&1
         then
@@ -2554,6 +2569,7 @@ then
         then
             echo "SKIPPING sdelete.  C: is an SSD"
         else
+            mkbanner "sdelete" '#' yellow
             sdelete -accepteula -z c:
         fi
     }
@@ -2633,7 +2649,7 @@ EOF
     }
 
     ##
-    function winps() {
+    function pswin() {
         tasklist.exe /FO TABLE
     }
 

@@ -149,6 +149,7 @@ kdenlive
 krb5
 kube-bench
 kube-linter
+kube-score
 kubecfg
 kubectl-tree
 kubehound
@@ -370,6 +371,7 @@ shellcheck
 signal
 simdjson
 simdutf
+slack
 slsa-verifier
 snitch
 sonar-scanner
@@ -430,6 +432,7 @@ vte3
 wandio
 webp
 wget
+whatsapp
 whisper-cpp
 whisper.cpp
 whois
