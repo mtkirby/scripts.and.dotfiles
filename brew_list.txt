@@ -301,6 +301,7 @@ openssl@4
 opus
 orc
 osinfo-db
+osquery
 osv-scanner
 osx-cpu-temp
 owlocr

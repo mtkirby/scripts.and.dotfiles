@@ -9,7 +9,6 @@ eamodio.gitlens
 esbenp.prettier-vscode
 github.vscode-github-actions
 github.vscode-pull-request-github
-google.geminicodeassist
 hashicorp.terraform
 kevinrose.vsc-python-indent
 mads-hartmann.bash-ide-vscode

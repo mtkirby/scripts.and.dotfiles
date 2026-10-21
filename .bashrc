@@ -1,4 +1,4 @@
-# 20261019 Kirby
+# 20261020 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -248,7 +248,10 @@ alias mystrace='strace -yy -s 1024 -a 80 -f -v -y '
 alias ifsd="export IFS=$' \t\n'"
 alias ifsn="export IFS=$'\n'"
 
-if ps -eww -o user,pid,ppid,pgid,stat,tty,nice,pcpu,pmem,stime,command >/dev/null 2>&1
+if [[ $(uname -s) =~ BSD ]]
+then
+    alias psa='ps auxwww'
+elif ps -eww -o user,pid,ppid,pgid,stat,tty,nice,pcpu,pmem,stime,command >/dev/null 2>&1
 then
     alias psa='ps -eww -o user,pid,ppid,pgid,stat,tty,nice,pcpu,pmem,stime,command'
 elif ps -axwww -o user,pid,ppid,%cpu,%mem,vsz,rss,tt,stat,start,etime,time,command >/dev/null 2>&1
@@ -1843,7 +1846,7 @@ function failalarm()
 # color: black|red|green|yellow|blue|magenta|cyan|white (always bold)
 function mkbanner()
 {
-    local display="${1:-BLAH}"
+    local display="${1:-}"
     local chars="${2:-#}"
     local color="${3:-}"
     local on='' off=''
@@ -1875,12 +1878,13 @@ function mkbanner()
 function mysysinfo()
 {
     local lbl=$'\e[96;1m' dim=$'\e[2m' rst=$'\e[0m'
-    local os kernel arch cpu cores ncpu load up s secs boot b k
+    local os kernel arch cpu cores ncpu load up s secs hsecs boot b k
     local memtotal memavail swaptotal swapused dfopt ro l1 l5 l15 sys n v ext
     local reg='/proc/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows NT/CurrentVersion'
     local -a info words
 
-    printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '-'
+    #printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '-'
+    mkbanner "SYSTEM INFO" '=' yellow
 
     kernel="$(uname -sr 2>/dev/null)"
     arch="$(uname -m 2>/dev/null)"
@@ -1992,6 +1996,16 @@ function mysysinfo()
     then
         read -r secs _ </proc/uptime
         secs="${secs%.*}"
+        # lxcfs already gives a container its own /proc/uptime; without it a container
+        # sees the host's, and has been up as long as its PID 1. PID 1's start time
+        # (stat field 22) is in clock ticks since host boot, within seconds of it on a host
+        if [[ -r /proc/1/stat && "$(</proc/mounts)" != *" /proc/uptime fuse.lxcfs "* ]]
+        then
+            s="$(</proc/1/stat)"
+            read -ra words <<<"${s##*) }"
+            k=$(( ${words[19]:-0} / $(getconf CLK_TCK 2>/dev/null || echo 100) ))
+            (( k > 60 && k < secs )) && hsecs=$secs secs=$(( secs - k ))
+        fi
     else
         [[ -z "$boot" ]] && boot="$(sysctl -n kern.boottime 2>/dev/null)"
         # macOS and FreeBSD print "{ sec = N, usec = N } date", OpenBSD prints N
@@ -2002,6 +2016,11 @@ function mysysinfo()
     then
         up="$((secs / 86400))d $((secs % 86400 / 3600))h $((secs % 3600 / 60))m"
         up="${up#0d }"
+        if [[ -n "$hsecs" ]]
+        then
+            s="$((hsecs / 86400))d $((hsecs % 86400 / 3600))h $((hsecs % 3600 / 60))m"
+            up="$up ${dim}(container; host ${s#0d })${rst}"
+        fi
     else
         s="$(uptime 2>/dev/null)"
         up="${s#*up }"
@@ -2185,7 +2204,9 @@ function mysysinfo()
             p = ($3 + $4) > 0 ? $3 * 100 / ($3 + $4) : 0
             printf "  %-22s %7s %7s %7s %4d%%  %s\n", name, h($2), h($3), h($4), p, bar(p)
         }'
-    printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '-'
+    #printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '-'
+    mkbanner "================================" '=' yellow
+
     return 0
 }
 
