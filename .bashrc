@@ -1,4 +1,4 @@
-# 20261021 Kirby
+# 20261022 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -1606,6 +1606,28 @@ EOF
     log="${HOME}/.cache/clamscan.log"
     rm -f "$log" >/dev/null 2>&1
     mkdir -p "${HOME}/.cache" || return 1
+
+    # Show a running clock while clamscan works. It writes to /dev/tty so
+    # it stays out of the log when the output is piped to tee.
+    local start=$SECONDS timer_pid="" oldtrap elapsed
+    if ( : >/dev/tty ) 2>/dev/null
+    then
+        # The 2>/dev/null hides bash's "[1] PID" job notice
+        {
+            while :
+            do
+                elapsed=$(( SECONDS - start ))
+                printf '\r\033[Kclamscan running: %02d:%02d:%02d' \
+                    $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
+                sleep 1
+            done >/dev/tty &
+        } 2>/dev/null
+        timer_pid=$!
+    fi
+    # Ctrl+C stops clamscan but still falls through to stop the clock
+    oldtrap="$(trap -p INT)"
+    trap ':' INT
+
     # Rootless podman storage is huge and mostly unreadable by its owner
     nice "$clamscan" -r -i \
         ${db:+--database="$db"} \
@@ -1615,6 +1637,22 @@ EOF
         --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
         --log="$log" \
         "${paths[@]}" >/dev/null 2>&1
+
+    if [[ -n "$timer_pid" ]]
+    then
+        # The 2>/dev/null hides bash's "Terminated" job notice
+        { kill "$timer_pid" && wait "$timer_pid"; } 2>/dev/null
+        printf '\r\033[K' >/dev/tty
+    fi
+    if [[ -n "$oldtrap" ]]
+    then
+        eval "$oldtrap"
+    else
+        trap - INT
+    fi
+    elapsed=$(( SECONDS - start ))
+    printf 'clamscan took %02d:%02d:%02d\n' \
+        $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
     mkbanner "CLAMSCAN RESULTS" '=' yellow
     cat "$log"
 }
@@ -2636,6 +2674,28 @@ EOF
 
         rm -f "$wdata\\log\\clamscan.log" >/dev/null 2>&1
         nice "$clamdir/freshclam.exe" --config-file="$(cygpath -w "$conf")" --show-progress -v >/dev/null 2>&1
+
+        # Show a running clock while clamscan works. It writes to /dev/tty so
+        # it stays out of the log when the output is piped to tee.
+        local start=$SECONDS timer_pid="" oldtrap elapsed
+        if ( : >/dev/tty ) 2>/dev/null
+        then
+            # The 2>/dev/null hides bash's "[1] PID" job notice
+            {
+                while :
+                do
+                    elapsed=$(( SECONDS - start ))
+                    printf '\r\033[Kclamscan running: %02d:%02d:%02d' \
+                        $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
+                    sleep 1
+                done >/dev/tty &
+            } 2>/dev/null
+            timer_pid=$!
+        fi
+        # Ctrl+C stops clamscan but still falls through to stop the clock
+        oldtrap="$(trap -p INT)"
+        trap ':' INT
+
         nice "$clamdir/clamscan.exe" -r -i \
             ${db:+--database="$db"} \
             --detect-pua=no \
@@ -2644,6 +2704,22 @@ EOF
             --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
             --log="$wdata\\log\\clamscan.log" \
             "${paths[@]}" >/dev/null 2>&1
+
+        if [[ -n "$timer_pid" ]]
+        then
+            # The 2>/dev/null hides bash's "Terminated" job notice
+            { kill "$timer_pid" && wait "$timer_pid"; } 2>/dev/null
+            printf '\r\033[K' >/dev/tty
+        fi
+        if [[ -n "$oldtrap" ]]
+        then
+            eval "$oldtrap"
+        else
+            trap - INT
+        fi
+        elapsed=$(( SECONDS - start ))
+        printf 'clamscan took %02d:%02d:%02d\n' \
+            $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
         mkbanner "CLAM SCAN LOG" '=' yellow
         cat "$wdata\\log\\clamscan.log"
     }
@@ -3435,6 +3511,28 @@ EOF
         fi
 
         rm -f "$prefix/var/log/clamscan.log" >/dev/null 2>&1
+
+        # Show a running clock while clamscan works. It writes to /dev/tty so
+        # it stays out of the log when the output is piped to tee.
+        local start=$SECONDS timer_pid="" oldtrap elapsed
+        if ( : >/dev/tty ) 2>/dev/null
+        then
+            # The 2>/dev/null hides bash's "[1] PID" job notice
+            {
+                while :
+                do
+                    elapsed=$(( SECONDS - start ))
+                    printf '\r\033[Kclamscan running: %02d:%02d:%02d' \
+                        $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
+                    sleep 1
+                done >/dev/tty &
+            } 2>/dev/null
+            timer_pid=$!
+        fi
+        # Ctrl+C stops clamscan but still falls through to stop the clock
+        oldtrap="$(trap -p INT)"
+        trap ':' INT
+
         nice "$prefix/bin/clamscan" -r -i \
             --detect-pua=no \
             --fail-if-cvd-older-than=7 \
@@ -3442,6 +3540,22 @@ EOF
             --max-filesize=500M --max-scansize=1000M --max-dir-recursion=30 \
             --log="$prefix/var/log/clamscan.log" \
             "${paths[@]}" >/dev/null 2>&1
+
+        if [[ -n "$timer_pid" ]]
+        then
+            # The 2>/dev/null hides bash's "Terminated" job notice
+            { kill "$timer_pid" && wait "$timer_pid"; } 2>/dev/null
+            printf '\r\033[K' >/dev/tty
+        fi
+        if [[ -n "$oldtrap" ]]
+        then
+            eval "$oldtrap"
+        else
+            trap - INT
+        fi
+        elapsed=$(( SECONDS - start ))
+        printf 'clamscan took %02d:%02d:%02d\n' \
+            $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
         mkbanner "CLAM SCAN LOG" '=' yellow
         cat "$prefix/var/log/clamscan.log"
     }
