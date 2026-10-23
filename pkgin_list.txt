@@ -32,7 +32,6 @@ fontconfig
 freetype2
 fribidi
 gawk
-gcc12
 gcc14-libs
 gd
 gdbm
@@ -522,6 +521,7 @@ p5-Router-Simple
 p5-SNMP-Info
 p5-SOAP-Lite
 p5-SUPER
+p5-Safe-Isa
 p5-Scalar-List-Utils
 p5-Scope-Guard
 p5-Set-Object

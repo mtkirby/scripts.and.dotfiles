@@ -263,6 +263,7 @@ lynx
 lz4
 lzo
 m4
+macmon
 macvim-app
 make
 mas

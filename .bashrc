@@ -1,4 +1,4 @@
-# 20261022 Kirby
+# 20261023 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -2275,6 +2275,349 @@ function mysysinfo()
             printf "  %-22s %7s %7s %7s %4d%%  %s\n", name, h($2), h($3), h($4), p, bar(p)
         }'
     #printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '-'
+    mkbanner "================================" '=' yellow
+
+    return 0
+}
+
+##################################################
+# Usage: mytemps [-f]   (-f for Fahrenheit)
+# Hardware temperatures from what each OS exposes: Linux (Alpine, OpenWrt,
+# Raspberry Pi, WSL) sysfs, macOS, FreeBSD/OpenBSD/NetBSD sysctl and envstat,
+# Solaris/illumos PICL and fmtopo, Haiku ACPI, Windows WMI; plus nvidia-smi,
+# smartctl and ipmitool when they're installed
+function mytemps()
+{
+    local lbl=$'\e[96;1m' rst=$'\e[0m'
+    local unit=C deg='' sys d f n v s b i base label crit hint nlbl note ps
+    local -a flags=("under-voltage" "freq capped" "throttled" "soft temp limit")
+    local -A count idx
+
+    case "$1" in
+        '') ;;
+        -f) unit=F ;;
+        *)  echo "Usage: mytemps [-f]"; return 1 ;;
+    esac
+    [[ "${LC_ALL:-${LC_CTYPE:-$LANG}}" == *[Uu][Tt][Ff]* ]] && deg='°'
+    sys="$(uname -s 2>/dev/null)"
+
+    # Windows, from Cygwin/MSYS or WSL. Emits "label|celsius|crit". Passed
+    # base64 so there is no quoting to survive Windows command-line parsing
+    # shellcheck disable=SC2016
+    ps='
+        $ErrorActionPreference = "SilentlyContinue"
+        $ic = [Globalization.CultureInfo]::InvariantCulture
+        function emit($n, $t, $c) { [string]::Format($ic, "{0}|{1:0.0}|{2:0.0}", $n, $t, $c) }
+        # ACPI zones: the perf counter needs no admin, MSAcpi does
+        $z = Get-CimInstance -Namespace root/cimv2 -ClassName Win32_PerfFormattedData_Counters_ThermalZoneInformation
+        foreach ($i in $z) {
+            $k = if ($i.HighPrecisionTemperature) { $i.HighPrecisionTemperature / 10 } else { $i.Temperature }
+            emit ("acpi " + ($i.Name -replace "^\\_TZ\.", "")) ($k - 273.15)
+        }
+        if (-not $z) {
+            foreach ($i in (Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature)) {
+                emit ("acpi " + ($i.InstanceName -replace "^.*\\", "")) ($i.CurrentTemperature / 10 - 273.15) ($i.CriticalTripPoint / 10 - 273.15)
+            }
+        }
+        # CPU cores and the rest, only while LibreHardwareMonitor or OpenHardwareMonitor runs
+        foreach ($ns in "LibreHardwareMonitor", "OpenHardwareMonitor") {
+            foreach ($i in (Get-CimInstance -Namespace root/$ns -ClassName Sensor | Where-Object SensorType -eq Temperature)) {
+                emit ($i.Parent + " " + $i.Name) $i.Value
+            }
+        }
+        # Drives, admin only
+        foreach ($d in (Get-PhysicalDisk)) {
+            $r = $d | Get-StorageReliabilityCounter
+            if ($r.Temperature) { emit $d.FriendlyName $r.Temperature }
+        }'
+    ps="$(printf '%s' "$ps" | iconv -f UTF-8 -t UTF-16LE 2>/dev/null | base64 | tr -d '\n')"
+
+    mkbanner "TEMPERATURES" '=' yellow
+
+    case "$sys" in
+        Linux)
+            hint="no hwmon or thermal zones (VM or container?)" ;;
+        Darwin)
+            hint="Apple Silicon needs smctemp or macmon (brew install smctemp)" ;;
+        FreeBSD)
+            hint="kldload coretemp (Intel) or amdtemp (AMD), and add it to /boot/loader.conf" ;;
+        SunOS)
+            (( EUID == 0 )) || hint="run as root to read fmtopo sensors" ;;
+        CYGWIN*|MINGW*|MSYS*)
+            hint="Windows hides most sensors: run as Administrator, or run LibreHardwareMonitor" ;;
+    esac
+
+    if ! {
+        case "$sys" in
+            Linux)
+                # hwmon covers CPU, chipset, GPU, NVMe and (with drivetemp) disks.
+                # A name several devices share (two NVMe drives) gets an index
+                for d in /sys/class/hwmon/hwmon*
+                do
+                    # Kernels before 3.15 kept the attributes under device/
+                    [[ -r "$d/name" ]] || d="$d/device"
+                    [[ -r "$d/name" ]] && n="$(<"$d/name")" && count[$n]=$(( ${count[$n]:-0} + 1 ))
+                done
+                {
+                    for d in /sys/class/hwmon/hwmon*
+                    do
+                        [[ -r "$d/name" ]] || d="$d/device"
+                        [[ -r "$d/name" ]] || continue
+                        n="$(<"$d/name")"
+                        v="$n"
+                        (( count[$n] > 1 )) && v="$n.$(( idx[$n]++ ))"
+                        for f in "$d"/temp*_input
+                        do
+                            [[ -r "$f" ]] || continue
+                            base="${f%_input}"
+                            label="${base##*/}"
+                            [[ -r "${base}_label" ]] && label="$(<"${base}_label")"
+                            crit=""
+                            [[ -r "${base}_crit" ]] && crit="$(<"${base}_crit")"
+                            [[ -z "$crit" && -r "${base}_max" ]] && crit="$(<"${base}_max")"
+                            echo "$v $label|$(<"$f")|$crit"
+                        done
+                    done
+                    # Thermal zones that didn't register a hwmon (its name swaps - for _);
+                    # crit is the "critical" trip, else "passive", where throttling starts
+                    for d in /sys/class/thermal/thermal_zone*
+                    do
+                        [[ -r "$d/temp" ]] || continue
+                        n="$(<"$d/type")"
+                        [[ -n "${count[${n//-/_}]}" ]] && continue
+                        [[ "$n" == x86_pkg_temp && -n "${count[coretemp]}" ]] && continue
+                        crit="" v=""
+                        for f in "$d"/trip_point_*_type
+                        do
+                            case "$(<"$f")" in
+                                passive)  [[ -z "$v" ]] && v="$(<"${f%_type}_temp")" ;;
+                                critical) crit="$(<"${f%_type}_temp")" ;;
+                            esac
+                        done
+                        echo "${d##*/thermal_} $n|$(<"$d/temp")|${crit:-$v}"
+                    done
+                } | awk -F'|' '{ printf "%s|%s|%s\n", $1, $2 / 1000, ($3 != "" ? $3 / 1000 : "") }'
+                # No sysfs sensors: old Pi firmware, or WSL (which can ask Windows)
+                if [[ ! -e /sys/class/thermal/thermal_zone0 && ! -e /sys/class/hwmon/hwmon0 ]]
+                then
+                    if command -v vcgencmd >/dev/null 2>&1
+                    then
+                        # "temp=48.3'C"
+                        v="$(vcgencmd measure_temp)"
+                        v="${v#temp=}"
+                        echo "soc|${v%%[!0-9.]*}|"
+                    fi
+                    command -v powershell.exe >/dev/null 2>&1 \
+                        && powershell.exe -NoProfile -NonInteractive -EncodedCommand "$ps" | tr -d '\r'
+                fi
+                ;;
+            Darwin)
+                # osx-cpu-temp reads 0 on Apple Silicon, which the filter below drops
+                if command -v smctemp >/dev/null 2>&1
+                then
+                    echo "cpu|$(smctemp -c)|"
+                    echo "gpu|$(smctemp -g)|"
+                elif command -v macmon >/dev/null 2>&1
+                then
+                    v="$(macmon pipe -s 1)"
+                    [[ "$v" =~ \"cpu_temp_avg\":([0-9.]+) ]] && echo "cpu (avg)|${BASH_REMATCH[1]}|"
+                    [[ "$v" =~ \"gpu_temp_avg\":([0-9.]+) ]] && echo "gpu (avg)|${BASH_REMATCH[1]}|"
+                elif command -v osx-cpu-temp >/dev/null 2>&1
+                then
+                    echo "cpu|$(osx-cpu-temp -c)|"
+                    echo "gpu|$(osx-cpu-temp -g)|"
+                fi
+                # Intel SMC
+                (( EUID == 0 )) && [[ "$(uname -m)" == x86_64 ]] \
+                    && powermetrics --samplers smc -i 1 -n 1 | awk -F': *' '
+                        / die temperature/ { sub(/ die temperature/, "", $1); print tolower($1) "|" $2 "|" }'
+                # Laptop battery, in hundredths of a degree
+                ioreg -rn AppleSmartBattery | awk '$1 == "\"Temperature\"" { printf "battery|%.1f|\n", $3 / 100 }'
+                ;;
+            FreeBSD)
+                # coretemp/amdtemp and ACPI print "45.0C", as do the trip points, so
+                # take tjmax/_CRT as crit and drop other limits. The Pi's is
+                # millidegrees with no unit
+                sysctl -a | awk '
+                    $1 !~ /:$/ { next }
+                    { n = $1; sub(/:$/, "", n); v = $2 + 0 }
+                    n == "hw.cpufreq.temperature" && $2 ~ /^[0-9]+$/ { k[++m] = "hw.soc"; t["hw.soc"] = v / 1000; next }
+                    $2 !~ /^-?[0-9.]+C$/ { next }
+                    n ~ /\.coretemp\.tjmax$/ { sub(/\.coretemp\.tjmax$/, "", n); c[n] = v; next }
+                    n ~ /\._CRT$/ { sub(/\._CRT$/, "", n); c[n] = v; next }
+                    n ~ /\.(_[A-Za-z0-9]+|[a-z_]*(max|min|delta|limit|throttle|passive|active)[a-z_]*)$/ { next }
+                    { sub(/\.temperature$/, "", n); k[++m] = n; t[n] = v }
+                    END {
+                        for (i = 1; i <= m; i++) {
+                            l = k[i]; sub(/^(dev|hw)\./, "", l)
+                            print l "|" t[k[i]] "|" c[k[i]]
+                        }
+                    }'
+                ;;
+            OpenBSD)
+                # "hw.sensors.acpitz0.temp0=27.80 degC (zone temperature)"
+                sysctl hw.sensors | awk -F= '$2 ~ / degC/ {
+                    n = $1; sub(/^hw\.sensors\./, "", n)
+                    if (match($2, /\([^)]*\)/)) n = n " " substr($2, RSTART + 1, RLENGTH - 2)
+                    printf "%s|%s|\n", n, $2 + 0
+                }'
+                ;;
+            NetBSD)
+                # "[coretemp0]" then "  cpu0 temperature:  43.000  100.000  degC";
+                # limit columns may be blank, so only Current is reliable
+                envstat | awk '
+                    /^\[/ { dev = $0; gsub(/[][ ]/, "", dev); next }
+                    $NF == "degC" && /:/ {
+                        l = $0; sub(/:.*/, "", l); sub(/^[ \t]+/, "", l); sub(/ *temperature$/, "", l)
+                        v = $0; sub(/^[^:]*: */, "", v)
+                        printf "%s|%s|\n", dev (l != "" ? " " l : ""), v + 0
+                    }'
+                ;;
+            SunOS)
+                # SPARC (and some x86 servers) keep sensors in the PICL tree; else
+                # fmtopo's facility nodes, which need root
+                v="$(prtpicl -v -c temperature-sensor | awk '
+                    function flush() {
+                        if (n != "" && t != "") print n (l != "" && !index(n, l) ? " " l : "") "|" t "|" c
+                        n = l = t = c = ""
+                    }
+                    /\(temperature-sensor,/ { flush(); n = $1; next }
+                    $1 == ":Temperature" { t = $2 }
+                    $1 == ":HighShutdownThreshold" { c = $2 }
+                    $1 == ":Label" { l = $0; sub(/^[ \t]*:Label[ \t]+/, "", l) }
+                    END { flush() }')"
+                if [[ -n "$v" ]]
+                then
+                    echo "$v"
+                elif (( EUID == 0 )) && [[ -x /usr/lib/fm/fmd/fmtopo ]]
+                then
+                    /usr/lib/fm/fmd/fmtopo -V '*sensor=*' | awk '
+                        function flush() { if (n != "" && temp && r != "") print n "|" r "|"; n = r = ""; temp = 0 }
+                        /^[a-z]+:\/\// {
+                            flush(); n = $0
+                            sub(/^[a-z]+:\/\/[^\/]*\//, "", n); sub(/^motherboard=0\//, "", n); sub(/\?sensor=/, " ", n)
+                            next
+                        }
+                        $1 == "type" && /TEMPERATURE/ { temp = 1 }
+                        $1 == "reading" { r = $3 }
+                        END { flush() }'
+                fi
+                ;;
+            Haiku)
+                # ACPI zones (Kelvin) and the Intel PCH sensor print a report when read
+                for f in /dev/power/*thermal*/*
+                do
+                    [[ -r "$f" ]] || continue
+                    awk -v n="${f#/dev/power/}" '
+                        /Temperature:/ {
+                            v = $0; sub(/^[^:]*: */, "", v); x = v + 0
+                            if (v ~ /K/) x -= 273.15
+                            if (/Current/) t = x; else if (/Critical/) c = x
+                        }
+                        END { if (t != "") print n "|" t "|" c }' "$f"
+                done
+                ;;
+            CYGWIN*|MINGW*|MSYS*)
+                powershell.exe -NoProfile -NonInteractive -EncodedCommand "$ps" | tr -d '\r'
+                ;;
+        esac
+
+        command -v nvidia-smi >/dev/null 2>&1 \
+            && nvidia-smi --query-gpu=index,name,temperature.gpu --format=csv,noheader,nounits \
+            | awk -F', *' '{ sub(/\r$/, ""); print "gpu" $1 " " $2 "|" $3 "|" }'
+
+        # Server BMCs (x86, SPARC ILOM): "CPU1 Temp | 30h | ok | 3.1 | 45 degrees C"
+        for f in /dev/ipmi0 /dev/ipmi/0 /dev/ipmidev/0 /dev/bmc
+        do
+            [[ -e "$f" ]] || continue
+            (( EUID == 0 )) && command -v ipmitool >/dev/null 2>&1 \
+                && ipmitool sdr type Temperature | awk -F' *[|] *' '$5 ~ /degrees C/ { printf "bmc %s|%s|\n", $1, $5 + 0 }'
+            break
+        done
+
+        # Drives. Linux already has them in hwmon. -n standby won't spin up a sleeping disk
+        if [[ "$sys" != Linux ]] && command -v smartctl >/dev/null 2>&1
+        then
+            smartctl --scan | while read -r d _ v _
+            do
+                smartctl -A -n standby -d "$v" "$d" | awk -v d="${d##*/}" '
+                    /^Temperature:/ { printf "%s|%s|\n", d, $2 + 0; exit }
+                    /^Current Drive Temperature:/ { printf "%s|%s|\n", d, $4 + 0; exit }
+                    $2 == "Temperature_Celsius" || $2 == "Airflow_Temperature_Cel" { printf "%s|%s|\n", d, $10 + 0; exit }'
+            done
+        fi
+    } 2>/dev/null | awk -F'|' -v unit="$unit" -v deg="$deg" '
+        function h(c) { return unit == "F" ? c * 9 / 5 + 32 : c }
+        function bar(p,  n, i, s) {
+            n = int(p / 5 + 0.5)
+            s = "\033[" (p >= 90 ? 31 : p >= 70 ? 33 : 32) "m"
+            for (i = 1; i <= 20; i++) s = s (i <= n ? "#" : i == n + 1 ? "\033[2m." : ".")
+            return "[" s "\033[0m]"
+        }
+        $2 !~ /^[ \t]*-?[0-9]/ { next }
+        {
+            t = $2 + 0
+            # Absent or broken sensors read 0, -128, 127 or 255
+            if (t == 0 || t <= -50 || t >= 125) next
+            c = $3 + 0
+            name[++n] = $1; temp[n] = t; crit[n] = (c > 20 && c < 200) ? c : 0
+            if (length($1) > w) w = length($1)
+        }
+        END {
+            if (!n) exit 1
+            if (w > 32) w = 32
+            # Pad the number, not the unit: some awks count ° as two bytes
+            printf "  \033[2m%-" w "s %" (deg != "" ? 8 : 7) "s  %-22s %s\033[0m\n", "", "now", "", "crit"
+            for (i = 1; i <= n; i++) {
+                l = length(name[i]) > 32 ? substr(name[i], 1, 29) "..." : name[i]
+                # The bar runs to crit, or 100C when the sensor has none
+                p = temp[i] * 100 / (crit[i] ? crit[i] : 100)
+                printf "  %-" w "s %6.1f%s  %s %s\n", l, h(temp[i]), deg unit, bar(p),
+                    crit[i] ? sprintf("%.0f%s", h(crit[i]), deg unit) : ""
+            }
+        }'
+    then
+        echo "  no temperature sensors found${hint:+: $hint}"
+    fi
+
+    case "$sys" in
+        Darwin)
+            # The only thermal state Apple Silicon reports without root or extra tools
+            v="$(notifyutil -g com.apple.system.thermalpressurelevel 2>/dev/null)"
+            nlbl=Pressure
+            case "${v##* }" in
+                0) note=nominal ;;
+                1) note=moderate ;;
+                2) note=heavy ;;
+                3) note=trapping ;;
+                4) note=sleeping ;;
+            esac
+            ;;
+        Linux)
+            # Raspberry Pi: low 4 bits are the state now, the same bits << 16 since boot
+            v="$(vcgencmd get_throttled 2>/dev/null)"
+            v="${v#throttled=}"
+            if [[ "$v" == 0x* ]]
+            then
+                nlbl=Throttle
+                note="$v"
+                (( v )) || note="none"
+                for b in 0 16
+                do
+                    s=""
+                    for i in 0 1 2 3
+                    do
+                        (( v >> (b + i) & 1 )) && s+="${s:+, }${flags[i]}"
+                    done
+                    n=now
+                    (( b )) && n="since boot"
+                    [[ -n "$s" ]] && note+="; $n: $s"
+                done
+            fi
+            ;;
+    esac
+    [[ -n "$note" ]] && printf '  %s%-8s%s %s\n' "$lbl" "$nlbl" "$rst" "$note"
+
     mkbanner "================================" '=' yellow
 
     return 0
