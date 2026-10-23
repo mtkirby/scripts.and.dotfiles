@@ -724,6 +724,39 @@ else
 fi
 
 ##################################################
+function mydotfiles()
+{
+    # Clone scripts.and.dotfiles, or pull it if it's already there.
+    # Usage: mydotfiles [DIR]   (default ~/Documents/GitHub/scripts.and.dotfiles)
+    local url="https://github.com/mtkirby/scripts.and.dotfiles.git"
+    local dir="${1:-${HOME}/Documents/GitHub/scripts.and.dotfiles}"
+    local origin
+
+    if ! command -v git >/dev/null 2>&1
+    then
+        echo "FAIL: NO GIT"
+        return 1
+    fi
+
+    if [[ -d "$dir/.git" ]]
+    then
+        # Don't pull some other repo that happens to live there
+        origin="$(git -C "$dir" config remote.origin.url)"
+        if [[ "${origin%.git}" != *github.com[:/]mtkirby/scripts.and.dotfiles ]]
+        then
+            echo "FAIL: $dir is a clone of ${origin:-nothing}, not $url"
+            return 1
+        fi
+        # --ff-only won't make a merge commit if local commits have diverged
+        git -C "$dir" pull --ff-only
+    else
+        # git clone refuses a dir that exists and isn't empty
+        mkdir -p "$(dirname "$dir")" || return 1
+        git clone "$url" "$dir"
+    fi
+}
+
+##################################################
 function strip_pkg_versions()
 {
     sed -E 's/-[0-9]+([.][0-9]+)*([a-z][0-9]*)*$//'
