@@ -822,7 +822,7 @@ function sshagent()
         then
             echo "ssh-agent already running.  importing environment..."
         else
-            rm -f ~/.ssh/.agent
+            rm -f ~/.ssh/.agent >/dev/null 2>&1
             echo "starting ssh-agent"
             ssh-agent -s > ~/.ssh/.agent
             . ~/.ssh/.agent
@@ -3765,7 +3765,7 @@ then
                 if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
                 then
                     echo "Removing obsolete extension: $ext"
-                    rm -rf -- "${extdir:?}/${ext:?}"
+                    rm -rf -- "${extdir:?}/${ext:?}" >/dev/null 2>&1
                 fi
             done
         fi
