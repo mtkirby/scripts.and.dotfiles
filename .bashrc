@@ -1,4 +1,4 @@
-# 20261023 Kirby
+# 20261024 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -2691,7 +2691,7 @@ then
                 if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
                 then
                     echo "Removing obsolete extension: $ext"
-                    rm -rf -- "${extdir:?}/${ext:?}"
+                    rm -rf -- "${extdir:?}/${ext:?}" >/dev/null 2>&1
                 fi
             done
         fi
@@ -3645,6 +3645,68 @@ then
     }
 
     ##
+    function patchmacfirefox() 
+        {
+        local was_running=0
+        local outdated
+
+        # Verify Firefox is managed by Homebrew
+        if ! brew list --cask firefox &>/dev/null; then
+            echo "Firefox is not managed by Homebrew"
+            return 1
+        fi
+
+        # Refresh Homebrew metadata
+        echo "Checking for Firefox updates..."
+        brew update || return 1
+
+        # Check for updates without modifying Firefox
+        outdated=$(brew outdated --cask --greedy --quiet firefox) || return 1
+
+        if [[ -z "$outdated" ]]; then
+            echo "Firefox is already up to date."
+            return 0
+        fi
+
+        echo "Firefox update available."
+
+        # Remember whether Firefox is running
+        if pgrep -x firefox >/dev/null; then
+            was_running=1
+
+            echo "Closing Firefox..."
+            osascript -e 'tell application "Firefox" to quit' || return 1
+
+            # Wait for Firefox to exit (maximum 30 seconds)
+            local count=0
+            while pgrep -x firefox >/dev/null; do
+                sleep 1
+                ((count += 1))
+
+                if ((count >= 30)); then
+                    echo "Firefox did not exit. Aborting."
+                    return 1
+                fi
+            done
+        fi
+
+        # Upgrade Firefox
+        echo "Upgrading Firefox..."
+        if ! brew upgrade --cask --greedy firefox; then
+            echo "Firefox upgrade failed."
+            return 1
+        fi
+
+        # Restart only if previously running
+        if ((was_running)); then
+            echo "Restarting Firefox..."
+            open -a Firefox
+        fi
+
+        echo "Firefox update complete."
+    }
+
+    ##
     function patchhomebrew()
     {
         xcode-select --install
@@ -3819,6 +3881,8 @@ then
     ##
     function mymacpatchall()
     {
+        mkbanner "patchmacfirefox" '#' yellow
+        patchmacfirefox 2>&1 |tee /tmp/patchmacfirefox.log
         mkbanner "patchmacvs" '#' yellow
         patchmacvs 2>&1 |tee /tmp/patchmacvs.log
         mkbanner "patchmac" '#' yellow
