@@ -2905,6 +2905,8 @@ then
         mywinclam 2>&1 |tee /tmp/mywinclam.log
         mkbanner "windiskclean" '#' yellow
         windiskclean 2>&1 |tee /tmp/windiskclean.log
+        mkbanner "winhealthcheck" '#' yellow
+        winhealthcheck 2>&1 |tee /tmp/winhealthcheck.log
         mkbanner "windiskdefrag" '#' yellow
         windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
         if find "$cygwinlog" -mmin -7200 >/dev/null 2>&1
@@ -2978,6 +2980,62 @@ then
                 && echo "Store update scan started.  Updates install in the background"
         else
             echo "SKIPPING Store update scan.  Run Cygwin as Administrator"
+        fi
+    }
+
+    ##
+    # Checks the Windows component store and system files, and reports what to run
+    # next. Output is captured, so nothing shows until each step finishes; sfc
+    # writes UTF-16 when piped, hence the NUL stripping. Summary matching is English-only.
+    function winhealthcheck()
+    {
+        local c out rc tmp
+        local -a notes
+        local -a cmds=(
+            "dism.exe /Online /Cleanup-Image /ScanHealth"
+            "sfc.exe /scannow"
+            "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore"
+        )
+        if ! id -G | grep -qw 544
+        then
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
+        fi
+        tmp="$(mktemp)" || return 1
+        for c in "${cmds[@]}"
+        do
+            mkbanner "$c" '.' yellow
+            echo "Running; this can take 10-30 minutes..."
+            # shellcheck disable=SC2086 # split the command into its arguments
+            $c >"$tmp" 2>&1
+            rc=$?
+            # Drop the progress bars and "N% complete" lines that \r redraws
+            out="$(tr -d '\000' <"$tmp" | tr '\r' '\n' \
+                | grep -avE '^[[:space:]]*$|^[[:space:]]*\[[= ]*[0-9.]+%[= ]*\][[:space:]]*$|[0-9]+% complete\.?[[:space:]]*$')"
+            echo "$out"
+            (( rc != 0 )) && notes+=("$c exited $rc")
+            case "$out" in
+                *"component store is repairable"*)
+                    notes+=("Component store is corrupt but repairable: run DISM /Online /Cleanup-Image /RestoreHealth, then sfc /scannow") ;;
+                *"component store is not repairable"*)
+                    notes+=("Component store is NOT repairable: an in-place Windows repair install is needed") ;;
+                *"unable to fix some of them"*)
+                    notes+=("sfc could not fix some files: run DISM /Online /Cleanup-Image /RestoreHealth, then sfc /scannow again; details in C:\\Windows\\Logs\\CBS\\CBS.log") ;;
+                *"successfully repaired them"*)
+                    notes+=("sfc found and repaired corrupt files; details in C:\\Windows\\Logs\\CBS\\CBS.log") ;;
+                *"could not perform the requested operation"*)
+                    notes+=("sfc could not run; try again after a reboot") ;;
+                *"Cleanup Recommended : Yes"*)
+                    notes+=("Component store cleanup recommended: run DISM /Online /Cleanup-Image /StartComponentCleanup") ;;
+            esac
+        done
+        rm -f "$tmp"
+        mkbanner "Windows health summary" '.' yellow
+        if (( ${#notes[@]} == 0 ))
+        then
+            echo "No problems found"
+        else
+            printf '%s\n' "${notes[@]}"
         fi
     }
 
