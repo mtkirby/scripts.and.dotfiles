@@ -38,6 +38,7 @@ link()
 
 for file in \
     .bashrc \
+    .gitconfig \
     .psqlrc \
     .screenrc \
     .vimrc \

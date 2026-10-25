@@ -1,0 +1,52 @@
+[user]
+    name = Matt Kirby
+    email = m.thomas.kirby@gmail.com
+
+[core]
+    autocrlf = input
+    editor = code --wait
+
+[init]
+    defaultBranch = main
+
+[url "git@github.com:mtkirby/"]
+    insteadOf = mtk:
+
+[alias]
+    # Useful shortcuts for a busy dev environment
+    st = status
+    co = checkout
+    br = branch
+    cm = commit
+    lg = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit
+
+[diff]
+    tool = vscode
+
+[difftool "vscode"]
+    cmd = code --wait --diff $LOCAL $REMOTE
+
+[merge]
+    tool = vscode
+
+[mergetool "vscode"]
+    cmd = code --wait $MERGED
+
+[help]
+    autocorrect = 1
+
+[includeIf "gitdir:~/Documents/GitHub/"]
+    path = ~/.gitconfig-github
+
+[includeIf "gitdir:~/Documents/stuff/"]
+    path = ~/.gitconfig-gitlab
+
+[includeIf "gitdir:~/Documents/gitlab/"]
+    path = ~/.gitconfig-gitlab
+
+[filter "lfs"]
+    clean = git-lfs clean -- %f
+    smudge = git-lfs smudge -- %f
+    process = git-lfs filter-process
+    required = true
+
