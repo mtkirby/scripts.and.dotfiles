@@ -2898,6 +2898,8 @@ then
         mkbanner "winmodcheck" '#' yellow
         # shellcheck disable=SC2119 # runs without --loldrivers
         winmodcheck 2>&1 |tee /tmp/winmodcheck.log
+        mkbanner "mywinvscan" '#' yellow
+        mywinvscan 2>&1 |tee /tmp/mywinvscan.log
     }
 
     ##
@@ -2986,6 +2988,60 @@ then
             mkbanner "sdelete" '#' yellow
             sdelete -accepteula -z c:
         fi
+    }
+
+    ##
+    # Starts a full Microsoft Defender scan limited to 10% CPU and returns. The scan
+    # runs in a hidden PowerShell started by Windows, not Cygwin, so it keeps going
+    # after Cygwin exits; it can take hours. Its output and MpCmdRun's exit code
+    # (0 clean or remediated, 2 needs attention) go to /tmp/mywinvscan.scan.log.
+    # MsMpEng.exe does the scanning and its priority can't be lowered, so the CPU
+    # limit is set in Defender's preferences. MpCmdRun.exe isn't on PATH, and the
+    # current one is in a versioned Platform dir.
+    function mywinvscan()
+    {
+        local cpu=10 mpcmd log=/tmp/mywinvscan.scan.log wmpcmd wlog script
+        local ps=/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+        local -a opts=(-Scan -ScanType 2)
+        if ! id -G | grep -qw 544
+        then
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
+        fi
+        mpcmd="$(printf '%s\n' "/cygdrive/c/ProgramData/Microsoft/Windows Defender/Platform/"*/MpCmdRun.exe | sort -V | tail -1)"
+        [[ -x "$mpcmd" ]] || mpcmd="/cygdrive/c/Program Files/Windows Defender/MpCmdRun.exe"
+        if [[ ! -x "$mpcmd" ]]
+        then
+            echo "FAIL: MpCmdRun.exe not found"
+            return 1
+        fi
+
+        # By default Defender throttles only scheduled scans. These preferences
+        # persist, so scheduled scans get the same limit afterwards.
+        echo "Limiting Defender scans to ${cpu}% CPU"
+        "$ps" -NoProfile -Command "Set-MpPreference -ScanAvgCPULoadFactor $cpu -ThrottleForScheduledScanOnly \$false -ErrorAction Stop; Get-MpPreference | Format-List ScanAvgCPULoadFactor, ThrottleForScheduledScanOnly" \
+            | tr -d '\r' \
+            || echo "WARN: could not set the Defender CPU limit; the scan will not be throttled"
+        # Ask this scan to follow that limit, on platforms whose MpCmdRun lists the switch
+        "$mpcmd" -h 2>&1 | grep -qi CpuThrottling && opts+=(-CpuThrottling)
+
+        # The detached PowerShell runs MpCmdRun, logs its output, then appends the
+        # exit code. base64 so there is no quoting to survive Windows command-line parsing
+        wmpcmd="$(cygpath -w "$mpcmd")"
+        wlog="$(cygpath -w "$log")"
+        script="& '$wmpcmd' ${opts[*]} 2>&1 | Out-File -Encoding ascii -FilePath '$wlog'
+Add-Content -Encoding ascii -Path '$wlog' -Value \"MpCmdRun exit code: \$LASTEXITCODE (0 = clean or remediated)\""
+        script="$(printf '%s' "$script" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')"
+        rm -f "$log"
+        echo "Starting $mpcmd ${opts[*]}"
+        if ! "$ps" -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','$script'"
+        then
+            echo "FAIL: could not start the Defender scan"
+            return 1
+        fi
+        echo "Defender full scan started in the background. When it finishes, the exit code is"
+        echo "at the end of $log; non-zero means check Windows Security > Protection history."
+        echo "Cancel it with: \"$mpcmd\" -Scan -Cancel"
     }
 
     ##

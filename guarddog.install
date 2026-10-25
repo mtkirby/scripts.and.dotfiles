@@ -1,0 +1,14 @@
+
+
+brew install libgit2 pkg-config uv
+
+LIBGIT2=$(brew --prefix libgit2) \
+PKG_CONFIG_PATH="$(brew --prefix libgit2)/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" \
+C_INCLUDE_PATH="$(brew --prefix libgit2)/include" \
+LIBRARY_PATH="$(brew --prefix libgit2)/lib" \
+uv tool install guarddog
+
+
+
+"${VIRTUAL_ENV}/bin/pip" freeze > /tmp/venv_requirements.txt
+guarddog pypi scan -r /tmp/venv_requirements.txt
