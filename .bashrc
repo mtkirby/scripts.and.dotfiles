@@ -2879,8 +2879,6 @@ then
         patchchoco 2>&1 |tee /tmp/patchchoco.log
         mkbanner "patchwinvs" '#' yellow
         patchwinvs 2>&1 |tee /tmp/patchwinvs.log
-        mkbanner "patchcygwin" '#' yellow
-        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         mkbanner "patchmsstore" '#' yellow
         patchmsstore 2>&1 |tee /tmp/patchmsstore.log
         mkbanner "patchwinget" '#' yellow
@@ -2900,6 +2898,9 @@ then
         winmodcheck 2>&1 |tee /tmp/winmodcheck.log
         mkbanner "mywinvscan" '#' yellow
         mywinvscan 2>&1 |tee /tmp/mywinvscan.log
+        # Last: Cygwin setup may kill this shell
+        mkbanner "patchcygwin" '#' yellow
+        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
     }
 
     ##
@@ -2916,12 +2917,25 @@ then
     }
 
     ##
+    # In quiet mode, setup kills every process that has a file it's replacing loaded,
+    # ending with TerminateProcess(-1), which the terminal shows as exit code
+    # 4294967295. cygwin1.dll is loaded in every Cygwin process, this shell included,
+    # so setup is started from Windows and should be the last thing this shell runs.
     function patchcygwin()
     {
-        rm -f setup-x86_64.exe >/dev/null 2>&1
-        wget https://cygwin.com/setup-x86_64.exe
-        chmod 700 setup-x86_64.exe
-        ./setup-x86_64.exe -q --upgrade-also
+        local setup=/tmp/setup-x86_64.exe
+        rm -f "$setup"
+        if ! wget -O "$setup" https://cygwin.com/setup-x86_64.exe
+        then
+            echo "FAIL: could not download setup-x86_64.exe"
+            return 1
+        fi
+        chmod 700 "$setup"
+        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command \
+            "Start-Process -FilePath '$(cygpath -w "$setup")' -ArgumentList '-q','--upgrade-also'" \
+            || return 1
+        echo "Cygwin setup started in its own window. If it updates files Cygwin is using,"
+        echo "it closes Cygwin windows, this one included. Log: /var/log/setup.log.full"
     }
 
     ##
