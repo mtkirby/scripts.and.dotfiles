@@ -921,6 +921,7 @@ print(json.dumps(IPWhois(argv[1]).lookup_rdap()))
 ##################################################
 function patchgem()
 {
+    mkbanner "patchgem" '#' yellow
     if ! command -v gem >/dev/null 2>&1
     then
         echo "FAIL: no gem installed"
@@ -946,17 +947,12 @@ function patchgem()
 ##################################################
 function patchmods()
 {
-    mkbanner "patchpip" '#' yellow
+    mkbanner "patchmods" '#' yellow
     patchpip 2>&1 |tee /tmp/patchpip.log
-    mkbanner "patchpipx" '#' yellow
     patchpipx 2>&1 |tee /tmp/patchpipx.log
-    mkbanner "patchgem" '#' yellow
     patchgem 2>&1 |tee /tmp/patchgem.log
-    mkbanner "patchcpan" '#' yellow
     patchcpan 2>&1 |tee /tmp/patchcpan.log
-    mkbanner "patchnpm" '#' yellow
     patchnpm 2>&1 |tee /tmp/patchnpm.log
-    mkbanner "patchcargo" '#' yellow
     patchcargo 2>&1 |tee /tmp/patchcargo.log
 }
 
@@ -965,6 +961,7 @@ function patchmods()
 # "python -m pip" so a non-Python "pip" earlier in PATH (pkgsrc's Perl one) isn't used
 function patchpip()
 {
+    mkbanner "patchpip" '#' yellow
     local py="${1:-python3}" pkg
     if ! "$py" -m pip --version >/dev/null 2>&1
     then
@@ -994,6 +991,7 @@ function patchpip()
 # Python CLI tools installed with pipx or "uv tool", each in its own venv
 function patchpipx()
 {
+    mkbanner "patchpipx" '#' yellow
     local found=0
     if command -v pipx >/dev/null 2>&1
     then
@@ -1019,6 +1017,7 @@ function patchpipx()
 ##################################################
 function cpanhbinstall()
 {
+    mkbanner "cpanhbinstall" '#' yellow
     if ! command -v brew >/dev/null 2>&1 || ! brew list perl >/dev/null 2>&1
     then
         echo "FAIL: brew perl not found"
@@ -1046,6 +1045,7 @@ function cpanhbinstall()
 #   everyone else installs into ~/perl5 (local::lib layout).
 function patchcpan()
 {
+    mkbanner "patchcpan" '#' yellow
     local os perl pbin brewprefix is_root=0
     os="$(uname -s 2>/dev/null)"
 
@@ -1193,6 +1193,7 @@ function patchcpan()
 ##################################################
 function patchnpm()
 {
+    mkbanner "patchnpm" '#' yellow
     if ! command -v npm >/dev/null 2>&1
     then
         echo "FAIL: npm not found"
@@ -1211,6 +1212,7 @@ function patchnpm()
 # binaries from "cargo install" are updated separately
 function patchcargo()
 {
+    mkbanner "patchcargo" '#' yellow
     local crate
     if ! command -v cargo >/dev/null 2>&1
     then
@@ -1242,6 +1244,7 @@ function patchcargo()
 ##################################################
 function patchpkgin()
 {
+    mkbanner "patchpkgin" '#' yellow
     local pkgin
     local -a asroot=(sudo)
     pkgin="$(type -P pkgin)"
@@ -1268,6 +1271,7 @@ function patchpkgin()
 ##################################################
 function patchhaiku()
 {
+    mkbanner "patchhaiku" '#' yellow
     pkgman refresh
     pkgman update -y
     pkgman full-sync
@@ -1301,6 +1305,7 @@ then
     ##
     function patchdnf()
     {
+        mkbanner "patchdnf" '#' yellow
         if ! command -v dnf >/dev/null 2>&1
         then
             echo "FAIL: dnf not found"
@@ -1320,6 +1325,7 @@ then
     ##
     function patchapt()
     {
+        mkbanner "patchapt" '#' yellow
         if ! command -v apt >/dev/null 2>&1
         then
             echo "FAIL: apt not found"
@@ -1346,6 +1352,7 @@ then
         #   UNOWNED   not installed by any package
         #   MODIFIED  changed since their package installed them
         # Works with dpkg (apt), rpm (dnf/yum), and apk. Container processes are skipped.
+        mkbanner "mylinuxprocsigs" '#' yellow
         local pm exe alt p pkg key
         local -a asroot=(sudo) exes
         local -A verify
@@ -1442,6 +1449,7 @@ then
         # List loaded kernel modules that weren't installed by any package, or
         # that changed since their package installed them.
         # Works with dpkg (apt), rpm (dnf/yum), and apk.
+        mkbanner "modpkgcheck" '#' yellow
         local pm module filename real p pkg key
         local found=0 modified=0
         local -a modules
@@ -1552,6 +1560,7 @@ fi
 ##################################################
 function myunixclam()
 {
+    mkbanner "myunixclam" '#' yellow
     local freshclam clamscan confdir conf db log hint t
     local -a asroot=(sudo) targets paths
 
@@ -2649,6 +2658,7 @@ then
     ##
     function patchchoco()
     {
+        mkbanner "patchchoco" '#' yellow
         choco upgrade all --ignore-dependencies -y
     }
 
@@ -2673,6 +2683,7 @@ then
     ##
     function patchwinvs()
     {
+        mkbanner "patchwinvs" '#' yellow
         local extdir obsolete ext
         extdir="/cygdrive/c/users/$(whoami)/.vscode/extensions"
         obsolete="$extdir/.obsolete"
@@ -2710,6 +2721,7 @@ then
     ##
     function patchmssigs()
     {
+        mkbanner "patchmssigs" '#' yellow
         mkbanner "Microsoft Defender Signature Update" '.' yellow
         /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command "Get-MpComputerStatus | Select-Object AntivirusSignatureVersion, AntivirusSignatureLastUpdated"
         /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command "Update-MpSignature"
@@ -2719,7 +2731,8 @@ then
     ##
     function mywinprocsigs()
     {
-        mkbanner "Running Processes Without Valid Authenticode Signature" '.' yellow
+        mkbanner "mywinprocsigs" '#' yellow
+        mkbanner "Processes W/O Valid Authenticode Signature" '.' yellow
         # List running programs without a valid Authenticode signature.
         # Run as Administrator, or other users' and system process paths are hidden.
         # shellcheck disable=SC2016
@@ -2735,6 +2748,7 @@ then
     # shellcheck disable=SC2120 # --loldrivers is for interactive use
     function winmodcheck()
     {
+        mkbanner "winmodcheck" '#' yellow
         mkbanner "Windows Driver Signature Check" '.' yellow
         # Like modpkgcheck, but Windows drivers come with signatures, not packages.
         # Alerts on loaded drivers without a valid signature, and on settings that
@@ -2865,6 +2879,7 @@ then
     ##
     function patchwinget()
     {
+        mkbanner "patchwinget" '#' yellow
         if ! command -v winget >/dev/null 2>&1
         then
             echo "SKIPPING winget.  Install App Installer from the Microsoft Store"
@@ -2878,45 +2893,32 @@ then
     ##
     function mywinpatchall()
     {
+        mkbanner "mywinpatchall" '#' yellow
         if ! id -G | grep -qw 544
         then
             echo "FAIL: run Cygwin as Administrator"
             return 1
         fi
         local cygwinlog="/var/log/setup.log.full"
-        mkbanner "patchmssigs" '#' yellow
         patchmssigs 2>&1 |tee /tmp/patchmssigs.log
-        mkbanner "patchchoco" '#' yellow
         patchchoco 2>&1 |tee /tmp/patchchoco.log
-        mkbanner "patchwinvs" '#' yellow
         patchwinvs 2>&1 |tee /tmp/patchwinvs.log
-        mkbanner "patchmsstore" '#' yellow
         patchmsstore 2>&1 |tee /tmp/patchmsstore.log
-        mkbanner "patchwinget" '#' yellow
         patchwinget 2>&1 |tee /tmp/patchwinget.log
-        mkbanner "patchmods" '#' yellow
         patchmods 2>&1 |tee /tmp/patchmods.log
-        mkbanner "mywinvscan" '#' yellow
         mywinvscan 2>&1 |tee /tmp/mywinvscan.log
         # Last: Cygwin setup may kill this shell
-        mkbanner "patchcygwin" '#' yellow
         patchcygwin 2>&1 |tee /tmp/patchcygwin.log
-        mkbanner "mywinclam" '#' yellow
         mywinclam 2>&1 |tee /tmp/mywinclam.log
-        mkbanner "windiskclean" '#' yellow
         windiskclean 2>&1 |tee /tmp/windiskclean.log
-        mkbanner "winhealthcheck" '#' yellow
         winhealthcheck 2>&1 |tee /tmp/winhealthcheck.log
-        mkbanner "windiskdefrag" '#' yellow
         windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
         if find "$cygwinlog" -mmin -7200 >/dev/null 2>&1
         then
             mkbanner "Cygwin $cygwinlog" '#' yellow
             cat "$cygwinlog"
         fi
-        mkbanner "mywinprocsigs" '#' yellow
         mywinprocsigs 2>&1 |tee /tmp/mywinprocsigs.log
-        mkbanner "winmodcheck" '#' yellow
         # shellcheck disable=SC2119 # runs without --loldrivers
         winmodcheck 2>&1 |tee /tmp/winmodcheck.log
     }
@@ -2924,6 +2926,7 @@ then
     ##
     function windiskclean()
     {
+        mkbanner "windiskclean" '#' yellow
         local vc='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
         # shellcheck disable=SC2016 # $_ is powershell, not shell
         local ps="Get-ChildItem $vc"' | Where-Object PSChildName -ne DownloadsFolder | ForEach-Object { New-ItemProperty -Path $_.PSPath -Name StateFlags0001 -Value 2 -PropertyType DWord -Force | Out-Null }'
@@ -2943,6 +2946,7 @@ then
     # since setup otherwise keeps them forever without updates.
     function patchcygwin()
     {
+        mkbanner "patchcygwin" '#' yellow
         local setup=/tmp/setup-x86_64.exe
         rm -f "$setup"
         if ! wget -O "$setup" https://cygwin.com/setup-x86_64.exe
@@ -2961,6 +2965,7 @@ then
     ##
     function patchmsstore()
     {
+        mkbanner "patchmsstore" '#' yellow
         if command -v winget >/dev/null 2>&1
         then
             mkbanner "winget upgrade --source msstore" '.' yellow
@@ -2989,6 +2994,7 @@ then
     # writes UTF-16 when piped, hence the NUL stripping. Summary matching is English-only.
     function winhealthcheck()
     {
+        mkbanner "winhealthcheck" '#' yellow
         local c out rc tmp
         local -a notes
         local -a cmds=(
@@ -3042,6 +3048,7 @@ then
     ##
     function windiskdefrag()
     {
+        mkbanner "windiskdefrag" '#' yellow
         if id -G | grep -qw 544
         then
             defrag.exe /C /O /U /V
@@ -3090,6 +3097,7 @@ then
     # current one is in a versioned Platform dir.
     function mywinvscan()
     {
+        mkbanner "mywinvscan" '#' yellow
         local cpu=10 mpcmd log=/tmp/mywinvscan.scan.log wmpcmd wlog script
         local ps=/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
         local -a opts=(-Scan -ScanType 2)
@@ -3137,6 +3145,7 @@ Add-Content -Encoding ascii -Path '$wlog' -Value \"MpCmdRun exit code: \$LASTEXI
     ##
     function mywinclam()
     {
+        mkbanner "mywinclam" '#' yellow
         if ! id -G | grep -qw 544
         then
             echo "FAIL: run Cygwin as Administrator"
