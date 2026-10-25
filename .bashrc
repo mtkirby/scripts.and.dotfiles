@@ -4120,8 +4120,7 @@ EOF
 fi
 
 ##################################################
-[[ -e /etc/bashrc.mk.local ]] && . /etc/bashrc.mk.local
-[[ -e ~/bashrc.mk.local ]] && . ~/bashrc.mk.local
+[[ -e ~/.bash_local ]] && . ~/.bash_local
 
 ##################################################
 # Only in interactive terminals, so scp, rsync and "ssh host cmd" stay silent
