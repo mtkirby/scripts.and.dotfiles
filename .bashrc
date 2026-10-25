@@ -935,6 +935,9 @@ function patchgem()
 
     gem update --system
     gem update
+    # gem update never removes old versions, and once several versions satisfy
+    # one dependency gem warns "Unresolved or ambiguous specs"
+    gem cleanup
     mkbanner "gem outdated report" '.' yellow
     gem outdated
     mkbanner '' '.' yellow
@@ -1160,11 +1163,18 @@ function patchcpan()
         "$pbin/cpan" -f -i "$mod"
     done
 
-    # new XS DLLs under /usr need a rebase on Cygwin; this runs it at the next setup
-    if [[ "$os" == CYGWIN* ]] \
+    # New XS DLLs need a rebase on Cygwin. Every setup run rebases new DLLs from
+    # packages and from advertised paths, so list ~/perl5 to include its DLLs:
+    # userpath.d files hold one absolute path per line, named starting with the account
+    if [[ "$os" == CYGWIN* && "$is_root" != 1 ]] \
     && command -v rebase-trigger >/dev/null 2>&1
     then
-        rebase-trigger fullrebase
+        local userpath
+        userpath="/var/lib/rebase/userpath.d/$(id -un)-perl5"
+        if ! grep -qxF "$ll" "$userpath" 2>/dev/null
+        then
+            mkdir -p "${userpath%/*}" && echo "$ll" >> "$userpath"
+        fi
     fi
 
     for dir in ~/.cpan/build ~/.local/share/.cpan/build
@@ -2873,6 +2883,7 @@ then
             echo "FAIL: run Cygwin as Administrator"
             return 1
         fi
+        local cygwinlog="/var/log/setup.log.full"
         mkbanner "patchmssigs" '#' yellow
         patchmssigs 2>&1 |tee /tmp/patchmssigs.log
         mkbanner "patchchoco" '#' yellow
@@ -2885,22 +2896,27 @@ then
         patchwinget 2>&1 |tee /tmp/patchwinget.log
         mkbanner "patchmods" '#' yellow
         patchmods 2>&1 |tee /tmp/patchmods.log
+        mkbanner "mywinvscan" '#' yellow
+        mywinvscan 2>&1 |tee /tmp/mywinvscan.log
+        # Last: Cygwin setup may kill this shell
+        mkbanner "patchcygwin" '#' yellow
+        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         mkbanner "mywinclam" '#' yellow
         mywinclam 2>&1 |tee /tmp/mywinclam.log
         mkbanner "windiskclean" '#' yellow
         windiskclean 2>&1 |tee /tmp/windiskclean.log
         mkbanner "windiskdefrag" '#' yellow
         windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
+        if find "$cygwinlog" -mmin -7200 >/dev/null 2>&1
+        then
+            mkbanner "Cygwin $cygwinlog" '#' yellow
+            cat "$cygwinlog"
+        fi
         mkbanner "mywinprocsigs" '#' yellow
         mywinprocsigs 2>&1 |tee /tmp/mywinprocsigs.log
         mkbanner "winmodcheck" '#' yellow
         # shellcheck disable=SC2119 # runs without --loldrivers
         winmodcheck 2>&1 |tee /tmp/winmodcheck.log
-        mkbanner "mywinvscan" '#' yellow
-        mywinvscan 2>&1 |tee /tmp/mywinvscan.log
-        # Last: Cygwin setup may kill this shell
-        mkbanner "patchcygwin" '#' yellow
-        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
     }
 
     ##
@@ -2921,6 +2937,8 @@ then
     # ending with TerminateProcess(-1), which the terminal shows as exit code
     # 4294967295. cygwin1.dll is loaded in every Cygwin process, this shell included,
     # so setup is started from Windows and should be the last thing this shell runs.
+    # --delete-orphans uninstalls packages Cygwin no longer ships (e.g. python36),
+    # since setup otherwise keeps them forever without updates.
     function patchcygwin()
     {
         local setup=/tmp/setup-x86_64.exe
@@ -2932,7 +2950,7 @@ then
         fi
         chmod 700 "$setup"
         /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command \
-            "Start-Process -FilePath '$(cygpath -w "$setup")' -ArgumentList '-q','--upgrade-also'" \
+            "Start-Process -FilePath '$(cygpath -w "$setup")' -ArgumentList '-q','--upgrade-also','--delete-orphans'" \
             || return 1
         echo "Cygwin setup started in its own window. If it updates files Cygwin is using,"
         echo "it closes Cygwin windows, this one included. Log: /var/log/setup.log.full"
