@@ -1,4 +1,4 @@
-# 20261025 Kirby
+# 20261026 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -656,7 +656,7 @@ fi
 ##################################################
 # python
 ##################################################
-export PYTHONSTARTUP=~/pythonrc.py
+export PYTHONSTARTUP=~/.pythonrc.py
 export WORKON_HOME=~/.virtualenvs
 export VIRTUAL_ENV_DISABLE_PROMPT=1
 
@@ -1705,7 +1705,7 @@ EOF
     elapsed=$(( SECONDS - start ))
     printf 'clamscan took %02d:%02d:%02d\n' \
         $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
-    mkbanner "CLAMSCAN RESULTS" '=' yellow
+    mkbanner "CLAMSCAN RESULTS" '-' yellow
     cat "$log"
 }
 
@@ -2351,7 +2351,7 @@ function mytemps()
         }'
     ps="$(printf '%s' "$ps" | iconv -f UTF-8 -t UTF-16LE 2>/dev/null | base64 | tr -d '\n')"
 
-    mkbanner "TEMPERATURES" '=' yellow
+    mkbanner "TEMPERATURES" '#' yellow
 
     case "$sys" in
         Linux)
@@ -2912,6 +2912,7 @@ then
         mywinclam 2>&1 |tee /tmp/mywinclam.log
         windiskclean 2>&1 |tee /tmp/windiskclean.log
         winhealthcheck 2>&1 |tee /tmp/winhealthcheck.log
+        windiskcheck 2>&1 |tee /tmp/windiskcheck.log
         windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
         if find "$cygwinlog" -mmin -7200 >/dev/null 2>&1
         then
@@ -3046,6 +3047,31 @@ then
     }
 
     ##
+    # Online NTFS check of C: (chkdsk /scan): finds problems while Windows runs and
+    # queues fixes it can't make online. Exit codes, per Microsoft's chkdsk docs:
+    # 0 none found, 1 found and fixed, 2 cleanup done or needed, 3 not fixed
+    function windiskcheck()
+    {
+        local rc
+        mkbanner "windiskcheck" '#' yellow
+        if ! id -G | grep -qw 544
+        then
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
+        fi
+        chkdsk.exe c: /scan
+        rc=$?
+        case "$rc" in
+            0) echo "chkdsk: no problems found on C:" ;;
+            1) echo "chkdsk: problems found on C: and fixed" ;;
+            2) echo "chkdsk: only housekeeping on C: (cleanup done, or left for a /f run)" ;;
+            *) echo "FAIL: chkdsk exited $rc: C: could not be checked, or problems were not fixed."
+               echo "      Run chkdsk c: /spotfix and answer Y to fix them at the next restart" ;;
+        esac
+        return "$rc"
+    }
+
+    ##
     function windiskdefrag()
     {
         mkbanner "windiskdefrag" '#' yellow
@@ -3073,6 +3099,7 @@ then
         patchmsstore
         mkbanner "Disk Cleanup" '#' yellow
         windiskclean
+        windiskcheck
         mkbanner "Disk Defragmentation" '#' yellow
         windiskdefrag
         if ! command -v sdelete >/dev/null 2>&1
@@ -3251,7 +3278,7 @@ EOF
         elapsed=$(( SECONDS - start ))
         printf 'clamscan took %02d:%02d:%02d\n' \
             $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
-        mkbanner "CLAM SCAN LOG" '=' yellow
+        mkbanner "CLAM SCAN LOG" '-' yellow
         cat "$wdata\\log\\clamscan.log"
     }
 
@@ -3783,6 +3810,7 @@ then
     ##
     function patchmacports()
     {
+        mkbanner "patchmacports" '#' yellow
         xcode-select --install
         xcodebuild -checkFirstLaunchStatus \
             || /opt/local/bin/sudo xcodebuild -license accept \
@@ -3802,6 +3830,7 @@ then
     ##
     function patchmacfirefox() 
         {
+        mkbanner "patchmacfirefox" '#' yellow
         local was_running=0
         local outdated
 
@@ -3864,6 +3893,7 @@ then
     ##
     function patchhomebrew()
     {
+        mkbanner "patchhomebrew" '#' yellow
         xcode-select --install
         xcodebuild -checkFirstLaunchStatus \
             || /opt/local/bin/sudo xcodebuild -license accept \
@@ -3885,6 +3915,7 @@ then
     ##
     function patchmacvs()
     {
+        mkbanner "patchmacvs" '#' yellow
         local extdir="$HOME/.vscode/extensions"
         local obsolete="$extdir/.obsolete"
         local isrunning=0
@@ -3932,6 +3963,7 @@ then
     ##
     function mymacprocsigs()
     {
+        mkbanner "mymacprocsigs" '#' yellow
         if ! command -v osqueryi >/dev/null 2>&1
         then
             echo "FAIL: SKIPPING mymacprocsigs.  Install osquery with homebrew"
@@ -3950,6 +3982,7 @@ then
         # kexts can only load from the auxiliary collection, and are checked
         # with codesign. System extensions run outside the kernel, but are
         # listed for review.
+        mkbanner "macmodcheck" '#' yellow
         local text id path k team found=0 thirdparty=0
         local -a ids
 
@@ -4036,31 +4069,22 @@ then
     ##
     function mymacpatchall()
     {
-        mkbanner "patchmacfirefox" '#' yellow
         patchmacfirefox 2>&1 |tee /tmp/patchmacfirefox.log
-        mkbanner "patchmacvs" '#' yellow
         patchmacvs 2>&1 |tee /tmp/patchmacvs.log
-        mkbanner "patchmac" '#' yellow
         patchmac 2>&1 |tee /tmp/patchmac.log
-        mkbanner "patchhomebrew" '#' yellow
         patchhomebrew 2>&1 |tee /tmp/patchhomebrew.log
-        mkbanner "patchmacports" '#' yellow
         patchmacports 2>&1 |tee /tmp/patchmacports.log
-        mkbanner "patchpkgin" '#' yellow
         patchpkgin 2>&1 |tee /tmp/patchpkgin.log
-        mkbanner "patchmods" '#' yellow
         patchmods
-        mkbanner "myhbrewclam" '#' yellow
         myhbrewclam 2>&1 |tee /tmp/myhbrewclam.log
-        mkbanner "mymacprocsigs" '#' yellow
         mymacprocsigs 2>&1 |tee /tmp/mymacprocsigs.log
-        mkbanner "macmodcheck" '#' yellow
         macmodcheck 2>&1 |tee /tmp/macmodcheck.log
     }
 
     ##
     function myhbrewclam()
     {
+        mkbanner "myhbrewclam" '#' yellow
         if ! brew list clamav >/dev/null 2>&1
         then
             echo "FAIL: NO CLAMAV: RUN brew install -y clamav"
@@ -4151,7 +4175,7 @@ EOF
         elapsed=$(( SECONDS - start ))
         printf 'clamscan took %02d:%02d:%02d\n' \
             $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
-        mkbanner "CLAM SCAN LOG" '=' yellow
+        mkbanner "CLAM SCAN LOG" '-' yellow
         cat "$prefix/var/log/clamscan.log"
     }
 

@@ -1,0 +1,2 @@
+# For running tests/: python -m pytest
+pytest==9.1.1

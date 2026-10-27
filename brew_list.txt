@@ -71,6 +71,7 @@ fastfetch
 ffmpeg
 file-formula
 findutils
+firefox
 flac
 fmt
 fontconfig
@@ -124,6 +125,7 @@ hoppscotch-selfhost
 htop
 iam-policy-json-to-terraform
 icu4c@78
+icu4c@79
 id3lib
 id3v2
 iftop
@@ -376,6 +378,7 @@ slack
 slsa-verifier
 snitch
 sonar-scanner
+sonarqube-cli
 speex
 spice-gtk
 spice-protocol
