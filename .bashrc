@@ -106,8 +106,13 @@ then
 fi
 
 ##################################################
-# Non-interactive shells (ssh host cmd, scp, rsync) only need the environment above
-[[ $- == *i* ]] || return
+# Interactive setup: shell options, aliases, history, prompt, ssh-agent, terraform.
+# Non-interactive shells (ssh host cmd, scp, rsync, scripts that source this file)
+# skip it but still get the functions further down. Not indented; it ends at
+# "end of interactive setup". Functions that use these aliases (psg uses psa) must
+# be defined after that, since bash expands aliases when it reads a function.
+if [[ $- == *i* ]]
+then
 
 ##################################################
 # TAGGED JOBS
@@ -672,6 +677,8 @@ alias pdb="python -m pdb"
 # debug in VS: debugpy --listen 5678 myscript.py
 alias debugpy="python -m debugpy"
 
+fi # end of interactive setup
+
 ##################################################
 
 function psg()
@@ -708,7 +715,9 @@ function dogitps()
 }
 
 ##################################################
-if [[ -e ~/.gitconfig ]] \
+# Interactive only: the prompt shows the repo, and scripts don't need git run on every cd
+if [[ $- == *i* ]] \
+&& [[ -e ~/.gitconfig ]] \
 && command -v git >/dev/null 2>&1
 then
     #ihavegit="YES"
@@ -4249,6 +4258,11 @@ EOF
         return 0
     }
 fi
+
+##################################################
+# Non-interactive shells (ssh host cmd, scp, rsync, scripts that source this file)
+# only need the environment and functions above
+[[ $- == *i* ]] || return
 
 ##################################################
 [[ -e ~/.bash_local ]] && . ~/.bash_local

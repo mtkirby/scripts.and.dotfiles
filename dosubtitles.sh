@@ -24,7 +24,8 @@ do
 done
 # Voice activity detection skips music and silence, where large models invent words
 vad="$models/ggml-silero-v6.2.0.bin"
-mybase="${myvid/\.[ma][4pkv][4vi]/}"
+# Strip the extension only; a pattern match could hit ".mkv" earlier in the path
+mybase="${myvid%.*}"
 tmpwav="/Volumes/shared/tmp/dosubtitles.$$.wav"
 
 
