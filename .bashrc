@@ -1,4 +1,4 @@
-# 20261027 Kirby
+# 20261028 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -2900,6 +2900,8 @@ then
             return 1
         fi
         local cygwinlog="/var/log/setup.log.full"
+        # First: if Cygwin setup closes this terminal, run mywinpatchall again
+        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         patchmssigs 2>&1 |tee /tmp/patchmssigs.log
         patchchoco 2>&1 |tee /tmp/patchchoco.log
         patchwinvs 2>&1 |tee /tmp/patchwinvs.log
@@ -2907,8 +2909,6 @@ then
         patchwinget 2>&1 |tee /tmp/patchwinget.log
         patchmods 2>&1 |tee /tmp/patchmods.log
         mywinvscan 2>&1 |tee /tmp/mywinvscan.log
-        # Last: Cygwin setup may kill this shell
-        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         mywinclam 2>&1 |tee /tmp/mywinclam.log
         windiskclean 2>&1 |tee /tmp/windiskclean.log
         winhealthcheck 2>&1 |tee /tmp/winhealthcheck.log
@@ -2942,13 +2942,14 @@ then
     # In quiet mode, setup kills every process that has a file it's replacing loaded,
     # ending with TerminateProcess(-1), which the terminal shows as exit code
     # 4294967295. cygwin1.dll is loaded in every Cygwin process, this shell included,
-    # so setup is started from Windows and should be the last thing this shell runs.
+    # so an update to it closes this terminal. Run it again afterwards: with nothing
+    # left to update, setup leaves the shell alone and the rest carries on.
     # --delete-orphans uninstalls packages Cygwin no longer ships (e.g. python36),
     # since setup otherwise keeps them forever without updates.
     function patchcygwin()
     {
         mkbanner "patchcygwin" '#' yellow
-        local setup=/tmp/setup-x86_64.exe
+        local setup=/tmp/setup-x86_64.exe rc
         rm -f "$setup"
         if ! wget -O "$setup" https://cygwin.com/setup-x86_64.exe
         then
@@ -2956,11 +2957,13 @@ then
             return 1
         fi
         chmod 700 "$setup"
-        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command \
-            "Start-Process -FilePath '$(cygpath -w "$setup")' -ArgumentList '-q','--upgrade-also','--delete-orphans'" \
-            || return 1
-        echo "Cygwin setup started in its own window. If it updates files Cygwin is using,"
-        echo "it closes Cygwin windows, this one included. Log: /var/log/setup.log.full"
+        "$setup" -q --upgrade-also --delete-orphans
+        rc=$?
+        if (( rc != 0 ))
+        then
+            echo "FAIL: Cygwin setup exited with $rc. Log: /var/log/setup.log.full"
+            return "$rc"
+        fi
     }
 
     ##

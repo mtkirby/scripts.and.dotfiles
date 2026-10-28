@@ -37,7 +37,7 @@ tmpwav="/Volumes/shared/tmp/dosubtitles.$$.wav"
 #    exit 0
 #fi
 
-if [[ -f "${mybase}.srt" ]]
+if [[ -f "${mybase}.ai.srt" ]]
 then
     echo "Already has subtitles: $myvid"
     exit 0
@@ -71,6 +71,6 @@ fi
 
 # -map 0:a:0: the first audio track, not one ffmpeg ranks higher such as commentary
 ffmpeg -i "$myvid" -map 0:a:0 -vn "${af[@]}" -f wav -ar 16000 -ac 1 -c:a pcm_s16le "$tmpwav"
-whisper-cli "${opts[@]}" -f "$tmpwav" -osrt -of "$mybase"
+whisper-cli "${opts[@]}" -f "$tmpwav" -osrt -of "${mybase}.ai"
 
 rm -f "$tmpwav"
