@@ -1,4 +1,4 @@
-# 20261026 Kirby
+# 20261027 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -3796,6 +3796,7 @@ then
     ##
     function patchmac()
     {
+        mkbanner "patchmac" '#' yellow
         if command -v mas >/dev/null 2>&1
         then
             mas outdated
@@ -3842,8 +3843,12 @@ then
 
         # Refresh Homebrew metadata
         echo "Checking for Firefox updates..."
-        brew update || return 1
-
+        if ! brew update
+        then
+            echo "Failed to update Homebrew. Please check your Homebrew installation."
+            return 1
+        fi
+    
         # Check for updates without modifying Firefox
         outdated=$(brew outdated --cask --greedy --quiet firefox) || return 1
 
