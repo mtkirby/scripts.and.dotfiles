@@ -4328,7 +4328,7 @@ then
         cat "$tmp/out"
         alerts="$(grep -c '^ALERT=' "$tmp/out")"
         notes="$(grep -c '^NOTE=' "$tmp/out")"
-        rm -rf -- "$tmp"
+        rm -rf -- "$tmp" >/dev/null 2>&1
         if (( alerts ))
         then
             echo "Found $alerts startup entries with signs of misuse, and $notes to review"
