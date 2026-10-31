@@ -1,4 +1,4 @@
-# 20261028 Kirby
+# 20261030 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -2751,35 +2751,241 @@ then
                 $s = Get-AuthenticodeSignature -LiteralPath $_
                 if ($s.Status -ne "Valid") { "{0,-14} {1}" -f $s.Status, $_ }
             }'
+
+        mkbanner "Windows Programs Renamed or Outside Their Usual Folders" '.' yellow
+        # LOLBAS (lolbas-project.github.io) lists Windows programs attackers misuse,
+        # such as certutil and mshta. A copy of one is still validly signed by
+        # Microsoft, so the check above passes it. Alerts on a running one that was
+        # renamed, or that runs from outside its usual folders.
+        # shellcheck disable=SC2016
+        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+            $ErrorActionPreference = "SilentlyContinue"
+            $c = @{ found = 0 }
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                # Windows PowerShell redraws its progress bar for every chunk, which slows downloads
+                $ProgressPreference = "SilentlyContinue"
+                $list = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop -Uri https://lolbas-project.github.io/api/lolbas.json).Content | ConvertFrom-Json
+            } catch {
+                "NOTE=`"Not checked: LOLBAS list not downloaded ($($_.Exception.Message))`""
+                return
+            }
+            # Usual folders as wildcards: <version>, <username> and version-numbered
+            # folders (Defender Platform\4.18.x-0) can be anything, and so can the drive
+            $where = @{}
+            foreach ($e in $list) {
+                $n = "$($e.Name)".ToLower()
+                if (-not $where.ContainsKey($n)) { $where[$n] = @() }
+                foreach ($f in @($e.Full_Path)) {
+                    $p = "$($f.Path)"
+                    if ($p -notmatch "^[A-Za-z]:\\") { continue }
+                    $p = ($p -replace "<[^>]*>", "*") -replace "\\\d+(\.\d+)+[^\\]*\\", "\*\"
+                    $where[$n] += "?" + $p.Substring(1)
+                }
+            }
+            # LOLBAS does not list every place Windows and Office keep these programs,
+            # so folders only an administrator can write to are accepted too
+            $trusted = "$env:SystemRoot\System32\*", "$env:SystemRoot\SysWOW64\*", "$env:SystemRoot\WinSxS\*",
+                "$env:SystemRoot\Microsoft.NET\*", "$env:SystemRoot\SystemApps\*", "$env:ProgramFiles\*", "${env:ProgramFiles(x86)}\*"
+            $writable = "\\(Temp|Tasks|Tracing|Debug|spool)\\"
+
+            Get-Process | Where-Object Path | ForEach-Object Path | Sort-Object -Unique |
+            ForEach-Object {
+                $p = $_
+                $leaf = (Split-Path -Leaf $p).ToLower()
+                # The name it was built with; Windows programs give e.g. CertUtil.exe.MUI
+                $orig = "$((Get-Item -LiteralPath $p).VersionInfo.OriginalFilename)".Trim().ToLower() -replace "\.mui$", ""
+                if ($where.ContainsKey($orig)) { $name = $orig } elseif ($where.ContainsKey($leaf)) { $name = $leaf } else { return }
+                # Same-named programs from other publishers (e.g. Discord Update.exe) are not the LOLBAS one
+                $s = Get-AuthenticodeSignature -LiteralPath $p
+                if ($s.Status -ne "Valid" -or $s.SignerCertificate.GetNameInfo("SimpleName", $false) -notlike "Microsoft*") { return }
+                if ($name -ne $leaf) {
+                    "ALERT=`"Renamed Windows program=$p is $name`""; $c.found++
+                    return
+                }
+                if ($where[$name] | Where-Object { $p -like $_ }) { return }
+                if ((Split-Path -Parent $p) -eq $env:SystemRoot) { return }
+                if (($trusted | Where-Object { $p -like $_ }) -and $p -notmatch $writable) { return }
+                "ALERT=`"Windows program=$name running from $p, outside its usual folders`""; $c.found++
+            }
+
+            if ($c.found) {
+                "Found $($c.found) renamed or relocated Windows programs"
+            } else {
+                "No renamed or relocated Windows programs running ($($where.Count) LOLBAS programs checked)"
+            }' | tr -d '\r'
     }
 
     ##
-    # shellcheck disable=SC2120 # --loldrivers is for interactive use
-    function winmodcheck()
+    # Startup entries that run LOLBAS programs (lolbas-project.github.io): Windows
+    # programs attackers misuse, such as mshta, rundll32 and certutil. Malware that
+    # survives a reboot has to start from somewhere, so this looks at scheduled tasks,
+    # Run keys, Startup folders, services, Winlogon and WMI subscriptions.
+    #   ALERT: the command shows a sign of misuse (a URL, javascript:, a scriptlet,
+    #     encoded PowerShell, a temp or public folder...), or Winlogon or WMI is set
+    #     to run something it normally does not.
+    #   NOTE: a LOLBAS program started by a Run key, Startup folder, WMI subscription
+    #     or a scheduled task outside \Microsoft\, for review. Windows' own tasks and
+    #     services use these programs all the time, so they are only alerted on.
+    function winstartupcheck()
     {
-        mkbanner "winmodcheck" '#' yellow
-        mkbanner "Windows Driver Signature Check" '.' yellow
-        # Like modpkgcheck, but Windows drivers come with signatures, not packages.
-        # Alerts on loaded drivers without a valid signature, and on settings that
-        # let unsigned or blocklisted drivers load. Drivers signed by someone other
-        # than Windows itself are listed for review. --loldrivers also downloads
-        # the loldrivers.io list and alerts on known vulnerable or malicious drivers.
-        local lol=""
-        case "$1" in
-            "") ;;
-            --loldrivers) lol=1 ;;
-            *)
-                echo "Usage: winmodcheck [--loldrivers]"
-                return 1
-                ;;
-        esac
+        mkbanner "winstartupcheck" '#' yellow
+        mkbanner "Startup Entries Running LOLBAS Programs" '.' yellow
         if ! id -G | grep -qw 544
         then
             echo "FAIL: run Cygwin as Administrator"
             return 1
         fi
         # shellcheck disable=SC2016
-        WINMODCHECK_LOL="$lol" /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+            $ErrorActionPreference = "SilentlyContinue"
+            $c = @{ found = 0; noted = 0 }
+            function Alert([string]$m) { "ALERT=`"$m`""; $c.found++ }
+            function Note([string]$m) { "NOTE=`"$m`""; $c.noted++ }
+
+            $names = @{}
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                # Windows PowerShell redraws its progress bar for every chunk, which slows downloads
+                $ProgressPreference = "SilentlyContinue"
+                $list = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop -Uri https://lolbas-project.github.io/api/lolbas.json).Content | ConvertFrom-Json
+                foreach ($e in $list) { $names["$($e.Name)".ToLower()] = 1 }
+                # LOLBAS leaves out PowerShell, the most common of all
+                foreach ($n in "powershell.exe", "pwsh.exe") { $names[$n] = 1 }
+            } catch {
+                Note "LOLBAS list not downloaded ($($_.Exception.Message)), so only Winlogon and WMI are checked"
+            }
+
+            # Signs of misuse in a command line
+            $signs = [ordered]@{
+                "a URL" = "(?i)\b(https?|ftps?)://"
+                "a network share" = "\\\\\w[\w.-]*\\"
+                "script in a URL" = "(?i)\b(javascript|vbscript):"
+                "a scriptlet or HTML application" = "(?i)\bscrobj\b|\.(sct|hta)\b"
+                "certutil download or decode options" = "(?i)[-/](urlcache|verifyctl|decodehex|decode|encode)\b"
+                "encoded or downloaded PowerShell" = "(?i)\s[-/](e|ec|en|enc\w*)\s|frombase64string|downloadstring|downloadfile|invoke-expression|\biex\b|net\.webclient"
+                "a temporary or public folder" = "(?i)\\(users\\public|appdata\\local\\temp|windows\\temp)\\|%te?mp%"
+                "a memory dump" = "(?i)minidump"
+                "a BITS transfer" = "(?i)[-/](transfer|addfile)\b"
+            }
+
+            # LOLBAS programs a command runs: any word naming one (C:\...\certutil.exe,
+            # mshta.exe), or a bare name (rundll32) that starts the command or follows
+            # cmd /c, /k or start
+            function Hits([string]$cmd) {
+                $found = @{}
+                $words = @($cmd -split ("[\s`",;" + [char]39 + "]+") | Where-Object { $_ })
+                for ($i = 0; $i -lt $words.Count; $i++) {
+                    $w = ($words[$i] -split "[\\/]")[-1].ToLower()
+                    if ($names.ContainsKey($w)) {
+                        $found[$w] = 1
+                    } elseif (($i -eq 0 -or $words[$i - 1] -in "/c", "/k", "start") -and $names.ContainsKey("$w.exe")) {
+                        $found["$w.exe"] = 1
+                    }
+                }
+                @($found.Keys | Sort-Object)
+            }
+
+            # $quiet: only alert, never note (Windows tasks and services)
+            function Check([string]$src, [string]$cmd, [bool]$quiet) {
+                $cmd = [Environment]::ExpandEnvironmentVariables($cmd).Trim()
+                if (-not $cmd) { return }
+                $bins = Hits $cmd
+                if (-not $bins) { return }
+                $why = @($signs.Keys | Where-Object { $cmd -match $signs[$_] })
+                if ($why) {
+                    Alert "$src runs $($bins -join "+") with $($why -join ", "): $cmd"
+                } elseif (-not $quiet) {
+                    Note "$src runs $($bins -join "+"): $cmd"
+                }
+            }
+
+            # Scheduled tasks
+            foreach ($t in Get-ScheduledTask) {
+                foreach ($a in @($t.Actions)) {
+                    if ($a.Execute) { Check "Task $($t.TaskPath)$($t.TaskName)" "$($a.Execute) $($a.Arguments)" ($t.TaskPath -like "\Microsoft\*") }
+                }
+            }
+
+            # Run keys, for the machine and every loaded user
+            $keys = @()
+            $roots = @("HKLM:\Software", "HKLM:\Software\WOW6432Node") +
+                @(Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -notlike "*_Classes" } | ForEach-Object { "Registry::$($_.Name)\Software" })
+            foreach ($r in $roots) {
+                $keys += "$r\Microsoft\Windows\CurrentVersion\Run", "$r\Microsoft\Windows\CurrentVersion\RunOnce", "$r\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run"
+            }
+            foreach ($k in $keys) {
+                $item = Get-Item -LiteralPath $k
+                if (-not $item) { continue }
+                foreach ($v in $item.GetValueNames()) {
+                    if ($v) { Check "Run key $k\$v" "$($item.GetValue($v))" $false }
+                }
+            }
+
+            # Startup folders: shortcuts are checked like commands; anything else is noted
+            $sh = New-Object -ComObject WScript.Shell
+            $dirs = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp") +
+                @(Get-ChildItem "$env:SystemDrive\Users" -Directory | ForEach-Object { "$($_.FullName)\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup" })
+            foreach ($d in $dirs) {
+                foreach ($f in Get-ChildItem -LiteralPath $d -File -Force) {
+                    if ($f.Name -eq "desktop.ini") { continue }
+                    if ($f.Extension -eq ".lnk") {
+                        $l = $sh.CreateShortcut($f.FullName)
+                        Check "Startup shortcut $($f.FullName)" "`"$($l.TargetPath)`" $($l.Arguments)" $false
+                    } else {
+                        Note "Startup folder file $($f.FullName)"
+                    }
+                }
+            }
+
+            # Services
+            foreach ($s in Get-CimInstance Win32_Service) {
+                if ($s.PathName) { Check "Service $($s.Name)" $s.PathName $true }
+            }
+
+            # Winlogon starts the shell and Userinit at every logon
+            $wl = Get-ItemProperty -Path "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
+            if ($wl.Shell -and $wl.Shell -notmatch "^\s*explorer\.exe\s*$") { Alert "Winlogon Shell is $($wl.Shell), not explorer.exe" }
+            if ($wl.Userinit -and $wl.Userinit -notmatch "^\s*([a-z]:\\windows\\system32\\)?userinit\.exe\s*,?\s*$") {
+                Alert "Winlogon Userinit is $($wl.Userinit), not userinit.exe"
+            }
+
+            # WMI subscriptions run a command or script whenever an event fires
+            foreach ($w in Get-CimInstance -Namespace root\subscription -ClassName CommandLineEventConsumer) {
+                $cmd = "$($w.ExecutablePath) $($w.CommandLineTemplate)"
+                if (Hits $cmd) { Check "WMI subscription $($w.Name)" $cmd $false } else { Note "WMI subscription $($w.Name) runs: $cmd" }
+            }
+            foreach ($w in Get-CimInstance -Namespace root\subscription -ClassName ActiveScriptEventConsumer) {
+                Alert "WMI subscription $($w.Name) runs a $($w.ScriptingEngine) script"
+            }
+
+            if ($c.found) {
+                "Found $($c.found) startup entries with signs of misuse, and $($c.noted) to review"
+            } elseif ($c.noted) {
+                "No startup entries show signs of misuse; $($c.noted) listed above to review"
+            } else {
+                "No startup entries run LOLBAS programs"
+            }' | tr -d '\r'
+    }
+
+    ##
+    function winmodcheck()
+    {
+        mkbanner "winmodcheck" '#' yellow
+        mkbanner "Windows Driver Signature Check" '.' yellow
+        # Like modpkgcheck, but Windows drivers come with signatures, not packages.
+        # Alerts on loaded drivers without a valid signature, on settings that let
+        # unsigned or blocklisted drivers load, and on drivers in the loldrivers.io
+        # list of known vulnerable or malicious drivers (a ~35 MB download; if it
+        # fails, the rest of the check still runs). Drivers signed by someone other
+        # than Windows itself are listed for review.
+        if ! id -G | grep -qw 544
+        then
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
+        fi
+        # shellcheck disable=SC2016
+        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
             $ErrorActionPreference = "SilentlyContinue"
             $script:found = 0
             $script:third = 0
@@ -2842,17 +3048,18 @@ then
 
             # SHA-256 of every sample in the loldrivers.io list
             $lol = @{}
-            if ($env:WINMODCHECK_LOL) {
-                try {
-                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                    $json = (Invoke-WebRequest -UseBasicParsing -Uri https://www.loldrivers.io/api/drivers.json).Content
-                    foreach ($m in [regex]::Matches($json, "`"SHA256`"\s*:\s*`"([0-9A-Fa-f]{64})`"")) { $lol[$m.Groups[1].Value] = 1 }
-                } catch {}
-                if ($lol.Count -eq 0) {
-                    Note "Known vulnerable drivers not checked: loldrivers.io list not downloaded"
-                } else {
-                    Note "Checking against $($lol.Count) loldrivers.io hashes"
-                }
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                # Windows PowerShell redraws its progress bar for every chunk, which
+                # makes a download this size many times slower
+                $ProgressPreference = "SilentlyContinue"
+                $json = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop -Uri https://www.loldrivers.io/api/drivers.json).Content
+                foreach ($m in [regex]::Matches($json, "`"SHA256`"\s*:\s*`"([0-9A-Fa-f]{64})`"")) { $lol[$m.Groups[1].Value] = 1 }
+            } catch {}
+            if ($lol.Count -eq 0) {
+                Note "Known vulnerable drivers not checked: loldrivers.io list not downloaded"
+            } else {
+                Note "Checking against $($lol.Count) loldrivers.io hashes"
             }
 
             foreach ($p in ($paths.Keys | Sort-Object)) {
@@ -2929,7 +3136,7 @@ then
             cat "$cygwinlog"
         fi
         mywinprocsigs 2>&1 |tee /tmp/mywinprocsigs.log
-        # shellcheck disable=SC2119 # runs without --loldrivers
+        winstartupcheck 2>&1 |tee /tmp/winstartupcheck.log
         winmodcheck 2>&1 |tee /tmp/winmodcheck.log
     }
 
@@ -3127,7 +3334,7 @@ then
     }
 
     ##
-    # Starts a full Microsoft Defender scan limited to 10% CPU and returns. The scan
+    # Starts a full Microsoft Defender scan limited to 50% CPU and returns. The scan
     # runs in a hidden PowerShell started by Windows, not Cygwin, so it keeps going
     # after Cygwin exits; it can take hours. Its output and MpCmdRun's exit code
     # (0 clean or remediated, 2 needs attention) go to /tmp/mywinvscan.scan.log.
@@ -3137,7 +3344,7 @@ then
     function mywinvscan()
     {
         mkbanner "mywinvscan" '#' yellow
-        local cpu=10 mpcmd log=/tmp/mywinvscan.scan.log wmpcmd wlog script
+        local cpu=50 mpcmd log=/tmp/mywinvscan.scan.log wmpcmd wlog script
         local ps=/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
         local -a opts=(-Scan -ScanType 2)
         if ! id -G | grep -qw 544
@@ -3817,7 +4024,7 @@ then
             echo "FAIL: SKIPPING mas.  Install mas with homebrew"
         fi
         softwareupdate --list
-        softwareupdate --install --all
+        softwareupdate --install --all --agree-to-license
     }
 
     ##
@@ -3990,6 +4197,150 @@ then
     }
 
     ##
+    # Startup entries that run LOOBins programs (loobins.io), shells, interpreters or
+    # curl: what macOS malware uses to come back after a reboot. Looks at launchd
+    # jobs (/Library/LaunchAgents, /Library/LaunchDaemons and each user's
+    # LaunchAgents), cron tables and the login and logout hooks. Apple's own jobs are
+    # on the sealed system volume, so they aren't listed.
+    #   ALERT: the command shows a sign of misuse (a URL, piping into a shell, an
+    #     inline script, base64 decoding, removing quarantine...), or its program is
+    #     in a temporary or shared folder.
+    #   NOTE: a job that runs one of those programs, for review; and any hook.
+    # Login items added in System Settings aren't covered (sfltool dumpbtm lists them).
+    function macstartupcheck()
+    {
+        mkbanner "macstartupcheck" '#' yellow
+        mkbanner "Startup Entries Running LOOBins Programs" '.' yellow
+        local tmp f prog args cmd k v alerts notes
+        local -a asroot=(sudo)
+        (( EUID == 0 )) && asroot=()
+        if (( ${#asroot[@]} )) && ! sudo -v
+        then
+            echo "NOTE=\"Not running as root: other users' LaunchAgents, cron tables and hooks are skipped\""
+            asroot=()
+        fi
+        tmp="$(mktemp -d)" || return 1
+
+        # LOOBins leaves out the shells, interpreters and downloaders macOS malware uses most
+        printf '%s\n' sh bash zsh dash ksh csh tcsh python python3 perl ruby php node \
+            curl wget nc ncat openssl base64 >"$tmp/names"
+        if ! curl -fsSL --max-time 120 -o "$tmp/loobins.json" https://www.loobins.io/loobins.json \
+        || ! jq -er '.[].name' "$tmp/loobins.json" >>"$tmp/names" 2>/dev/null
+        then
+            echo "NOTE=\"LOOBins list not downloaded, so only shells, interpreters and downloaders are looked for\""
+        fi
+
+        # One "source<TAB>command" line per entry
+        : >"$tmp/entries"
+        # launchd: Program, or else ProgramArguments; with both, ProgramArguments[0] is
+        # only the name the program sees
+        while IFS= read -r f
+        do
+            prog="$("${asroot[@]}" plutil -extract Program raw -o - "$f" 2>/dev/null)"
+            args="$("${asroot[@]}" plutil -extract ProgramArguments json -o - "$f" 2>/dev/null)"
+            if [[ -n "$prog" ]]
+            then
+                cmd="$prog $(jq -r '.[1:] | map(tostring) | join(" ")' <<<"${args:-[]}" 2>/dev/null)"
+            else
+                cmd="$(jq -r 'map(tostring) | join(" ")' <<<"${args:-[]}" 2>/dev/null)"
+            fi
+            cmd="${cmd//[$'\t\n']/ }"
+            [[ -n "${cmd// /}" ]] && printf 'launchd job %s\t%s\n' "$f" "$cmd" >>"$tmp/entries"
+        done < <("${asroot[@]}" find /Library/LaunchAgents /Library/LaunchDaemons \
+            /Users/*/Library/LaunchAgents /var/root/Library/LaunchAgents \
+            -maxdepth 1 -name '*.plist' 2>/dev/null)
+        # cron: the command follows the schedule (5 fields, or one like @reboot) and,
+        # in /etc/crontab, the user
+        # shellcheck disable=SC2016 # $1 is for sh -c, the rest is awk
+        "${asroot[@]}" sh -c 'awk "$1" /etc/crontab /usr/lib/cron/tabs/* 2>/dev/null' sh '
+            /^[ \t]*(#|$)/ || /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=/ { next }
+            {
+                skip = ($1 ~ /^@/) ? 1 : 5
+                if (FILENAME == "/etc/crontab") skip++
+                cmd = $0
+                for (i = 0; i < skip; i++) sub(/^[ \t]*[^ \t]+[ \t]+/, "", cmd)
+                gsub(/\t/, " ", cmd)
+                print "cron " FILENAME "\t" cmd
+            }' >>"$tmp/entries"
+        # Without root, at least your own crontab
+        if (( EUID != 0 && ${#asroot[@]} == 0 ))
+        then
+            crontab -l 2>/dev/null | awk '
+                /^[ \t]*(#|$)/ || /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=/ { next }
+                {
+                    cmd = $0; skip = ($1 ~ /^@/) ? 1 : 5
+                    for (i = 0; i < skip; i++) sub(/^[ \t]*[^ \t]+[ \t]+/, "", cmd)
+                    gsub(/\t/, " ", cmd)
+                    print "cron (your crontab)\t" cmd
+                }' >>"$tmp/entries"
+        fi
+        # Login and logout hooks (deprecated, so rarely used by anything legitimate)
+        for k in LoginHook LogoutHook
+        do
+            v="$("${asroot[@]}" defaults read /var/root/Library/Preferences/com.apple.loginwindow "$k" 2>/dev/null)"
+            [[ -n "$v" ]] && printf 'Hook %s\t%s\n' "$k" "${v//[$'\t\n']/ }" >>"$tmp/entries"
+        done
+
+        # A program counts where a command starts: the first word, after ; | & ( or
+        # a backquote, after -c, or after env, exec, nohup, sudo and the like. An
+        # absolute path in a bin folder counts anywhere.
+        awk -F'\t' -v q="'" '
+            FILENAME == ARGV[1] { names[$1] = 1; next }
+            {
+                src = $1; cmd = $2; low = tolower(cmd)
+                s = cmd; gsub(/[;|&()`]/, " ; ", s); gsub("[\"" q "$]", " ", s)
+                n = split(s, w, /[ \t]+/)
+                hits = ""; first = ""; pos = 1
+                for (i = 1; i <= n; i++) {
+                    t = w[i]
+                    if (t == "") continue
+                    if (first == "") first = t
+                    if (t == ";") { pos = 1; continue }
+                    b = t; sub(/.*\//, "", b); v = b; sub(/[0-9.]+$/, "", v)
+                    if ((pos || t ~ /^\/(usr\/(local\/)?)?s?bin\/|^\/usr\/libexec\/|^\/opt\/(homebrew|local)\/bin\//) \
+                        && ((b in names) || (v in names)) && index("+" hits "+", "+" b "+") == 0)
+                        hits = hits (hits == "" ? "" : "+") b
+                    pos = (b ~ /^(env|exec|nohup|sudo|time|xargs|nice|caffeinate)$/ || t == "-c" || (pos && t ~ /=/))
+                }
+                why = ""
+                if (low ~ /(https?|ftps?):\/\//) why = why ", a URL"
+                if (low ~ /\| *((ba|z|da|k)?sh|python[0-9.]*|perl|ruby|php|node|osascript)( |$)/) why = why ", piping into a shell or interpreter"
+                if (low ~ /osascript( +-l +[a-z]+)? +-e|(python[0-9.]*|perl|ruby|php|node) +-[cer]( |$)/) why = why ", an inline script"
+                if (low ~ /base64[^;|]* (-d|--decode)/) why = why ", base64 decoding"
+                if (low ~ /xattr[^;|]*com\.apple\.quarantine|xattr +-c|spctl +--(master|global)-disable/) why = why ", removing quarantine or Gatekeeper"
+                if (low ~ /\/dev\/tcp\/|mkfifo|(^|[ \/])(nc|ncat|netcat) [^;|]*-[a-z]*[el]/) why = why ", a reverse shell or listener"
+                if (low ~ /security +(dump-keychain|find-generic-password|find-internet-password)/) why = why ", reading the keychain"
+                if (low ~ /tccutil +reset|csrutil +disable/) why = why ", changing privacy or SIP protection"
+                if (low ~ /dscl [^;|]*-(create|append|passwd)|sysadminctl [^;|]*-adduser|dseditgroup [^;|]*-o +edit/) why = why ", changing users or groups"
+                tmpdir = "^\\/(private\\/)?(tmp|var\\/tmp|var\\/folders)\\/|^\\/users\\/shared\\/"
+                if (low ~ /(^|[ =])\/(private\/)?(tmp|var\/tmp|var\/folders)\/|\/users\/shared\//) why = why ", a temporary or shared folder"
+                sub(/^, /, "", why)
+                if (tolower(first) ~ tmpdir)
+                    print "ALERT=\"" src " runs " first " from a temporary or shared folder: " cmd "\""
+                else if (hits != "" && why != "")
+                    print "ALERT=\"" src " runs " hits " with " why ": " cmd "\""
+                else if (hits != "")
+                    print "NOTE=\"" src " runs " hits ": " cmd "\""
+                else if (src ~ /^Hook /)
+                    print "NOTE=\"" src " runs: " cmd "\""
+            }' "$tmp/names" "$tmp/entries" >"$tmp/out"
+
+        cat "$tmp/out"
+        alerts="$(grep -c '^ALERT=' "$tmp/out")"
+        notes="$(grep -c '^NOTE=' "$tmp/out")"
+        rm -rf -- "$tmp"
+        if (( alerts ))
+        then
+            echo "Found $alerts startup entries with signs of misuse, and $notes to review"
+        elif (( notes ))
+        then
+            echo "No startup entries show signs of misuse; $notes listed above to review"
+        else
+            echo "No startup entries run LOOBins programs, shells or interpreters"
+        fi
+    }
+
+    ##
     function macmodcheck()
     {
         # Like modpkgcheck, but macOS kexts come from signed kernel collections,
@@ -4087,14 +4438,15 @@ then
     function mymacpatchall()
     {
         patchmacfirefox 2>&1 |tee /tmp/patchmacfirefox.log
-        patchmacvs 2>&1 |tee /tmp/patchmacvs.log
         patchmac 2>&1 |tee /tmp/patchmac.log
+        patchmacvs 2>&1 |tee /tmp/patchmacvs.log
         patchhomebrew 2>&1 |tee /tmp/patchhomebrew.log
         patchmacports 2>&1 |tee /tmp/patchmacports.log
         patchpkgin 2>&1 |tee /tmp/patchpkgin.log
         patchmods
         myhbrewclam 2>&1 |tee /tmp/myhbrewclam.log
         mymacprocsigs 2>&1 |tee /tmp/mymacprocsigs.log
+        macstartupcheck 2>&1 |tee /tmp/macstartupcheck.log
         macmodcheck 2>&1 |tee /tmp/macmodcheck.log
     }
 
