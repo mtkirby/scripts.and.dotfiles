@@ -2820,13 +2820,17 @@ then
     # Startup entries that run LOLBAS programs (lolbas-project.github.io): Windows
     # programs attackers misuse, such as mshta, rundll32 and certutil. Malware that
     # survives a reboot has to start from somewhere, so this looks at scheduled tasks,
-    # Run keys, Startup folders, services, Winlogon and WMI subscriptions.
+    # Run keys, Startup folders, services, Winlogon and WMI subscriptions. It also
+    # checks every shortcut on Desktops, in Start menus and pinned to the taskbar,
+    # since .lnk malware disguises itself as a document or hijacks a shortcut.
     #   ALERT: the command shows a sign of misuse (a URL, javascript:, a scriptlet,
     #     encoded PowerShell, a temp or public folder...), or Winlogon or WMI is set
-    #     to run something it normally does not.
-    #   NOTE: a LOLBAS program started by a Run key, Startup folder, WMI subscription
-    #     or a scheduled task outside \Microsoft\, for review. Windows' own tasks and
-    #     services use these programs all the time, so they are only alerted on.
+    #     to run something it normally does not, or a shortcut pads its arguments
+    #     out of sight or runs a program from a temp or public folder.
+    #   NOTE: a LOLBAS program started by a Run key, Startup folder, WMI
+    #     subscription, a scheduled task outside \Microsoft\ or a shortcut with
+    #     arguments, for review. Windows' own tasks and services use these programs
+    #     all the time, so they are only alerted on.
     function winstartupcheck()
     {
         mkbanner "winstartupcheck" '#' yellow
@@ -2938,6 +2942,38 @@ then
                 }
             }
 
+            # Every other shortcut: Desktops (including OneDrive), Start menus and
+            # taskbar pins. Malware arrives as a shortcut disguised as a document, or
+            # edits an existing shortcut to run itself first. A shortcut that runs a
+            # LOLBAS program with no arguments (Command Prompt, PowerShell) is normal,
+            # so only alerts.
+            $places = @("$env:PUBLIC\Desktop", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs") +
+                @(Get-ChildItem "$env:SystemDrive\Users" -Directory | ForEach-Object {
+                    "$($_.FullName)\Desktop"
+                    "$($_.FullName)\AppData\Roaming\Microsoft\Windows\Start Menu\Programs"
+                    "$($_.FullName)\AppData\Roaming\Microsoft\Internet Explorer\Quick Launch"
+                    Get-ChildItem -LiteralPath $_.FullName -Directory -Filter "OneDrive*" | ForEach-Object { "$($_.FullName)\Desktop" }
+                })
+            $shortcuts = 0
+            # Sorted unique: the Public Desktop is also C:\Users\Public\Desktop
+            foreach ($f in Get-ChildItem -LiteralPath $places -Recurse -File -Force -Filter *.lnk | Sort-Object FullName -Unique) {
+                # Startup folders were checked above
+                if ($f.DirectoryName -match "\\Start Menu\\Programs\\Startup$") { continue }
+                $l = $sh.CreateShortcut($f.FullName)
+                if (-not $l) { continue }
+                $shortcuts++
+                $target = [Environment]::ExpandEnvironmentVariables($l.TargetPath)
+                $sargs = "$($l.Arguments)"
+                if ($sargs -match "\s{20,}|[\r\n]") {
+                    # Padding pushes the real command out of sight in the Properties dialog
+                    Alert "Shortcut $($f.FullName) hides its arguments behind padding: `"$target`" $($sargs -replace "\s+", " ")"
+                } elseif ($target -match $signs["a temporary or public folder"]) {
+                    Alert "Shortcut $($f.FullName) runs a program in a temporary or public folder: `"$target`" $sargs"
+                } else {
+                    Check "Shortcut $($f.FullName)" "`"$target`" $sargs" (-not $sargs.Trim())
+                }
+            }
+
             # Services
             foreach ($s in Get-CimInstance Win32_Service) {
                 if ($s.PathName) { Check "Service $($s.Name)" $s.PathName $true }
@@ -2960,11 +2996,11 @@ then
             }
 
             if ($c.found) {
-                "Found $($c.found) startup entries with signs of misuse, and $($c.noted) to review"
+                "Found $($c.found) startup entries or shortcuts with signs of misuse, and $($c.noted) to review ($shortcuts shortcuts checked)"
             } elseif ($c.noted) {
-                "No startup entries show signs of misuse; $($c.noted) listed above to review"
+                "No startup entries or shortcuts show signs of misuse; $($c.noted) listed above to review ($shortcuts shortcuts checked)"
             } else {
-                "No startup entries run LOLBAS programs"
+                "No startup entries or shortcuts run LOLBAS programs ($shortcuts shortcuts checked)"
             }' | tr -d '\r'
     }
 
