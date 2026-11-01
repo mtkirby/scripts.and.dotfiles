@@ -1,4 +1,7 @@
 <#
+.VERSION
+    2026-11-01
+
 .SYNOPSIS
     Daily Windows run: security hardening, updates, a background Defender scan,
     health and security checks, and a report of Defender's Protection history.
@@ -11,8 +14,6 @@
        - cis-chrome:      Chrome policies (CIS Google Chrome Benchmark v3.0.0), the
                           extension allowlist, the JavaScript optimizer allowlist,
                           and Chrome Remote Desktop blocked
-       - cis-passwords:   local password and lockout policy (CIS Windows 11
-                          Stand-alone Benchmark v5.0.0)
        - cis-services:    unneeded services disabled
        - cis-registry:    automatic logon and WDigest off
        - dns:             Quad9 / OpenDNS with DNS over HTTPS preferred
@@ -134,6 +135,7 @@ $JsOptimizerAllowedSites = @(
     'https://[*.]live.com'           # Outlook.com mail, personal OneDrive
     'https://[*.]yahoo.com'          # Yahoo: mail, finance, news
     'https://[*.]wellsfargo.com'     # Wells Fargo online banking
+    'https://[*.]vanguard.com'     # Wells Fargo online banking
 )
 
 # ---------------------------------------------------------------
@@ -143,7 +145,7 @@ $JsOptimizerAllowedSites = @(
 #   1 = they open read-only in Protected View
 #   2 = they open in Protected View and can be edited
 # ---------------------------------------------------------------
-$OfficeBlockedFileBehavior = 0
+$OfficeBlockedFileBehavior = 1
 
 # ---------------------------------------------------------------
 # Programs allowed to change files in folders that Controlled folder access
@@ -152,7 +154,8 @@ $OfficeBlockedFileBehavior = 0
 # anything else it blocks; blocks show in the Protection history report.
 # ---------------------------------------------------------------
 $ControlledFolderAllowedApps = @(
-    # 'C:\cygwin64\bin\git.exe'  # example
+    'C:\cygwin\bin\bash.exe'
+    'C:\cygwin\bin\git.exe'
 )
 
 # ---------------------------------------------------------------
@@ -500,7 +503,7 @@ function Set-ChromeHardening {
     # downloads for scanning, and warns about breached passwords. It catches new
     # phishing sites sooner, but Google sees far more of your browsing.
     # Being mandatory, 1 also drops any user who had chosen Enhanced back to Standard.
-    Set-ChromePolicy -Name 'SafeBrowsingProtectionLevel' -Value 1 -Description 'Enable Safe Browsing (standard mode)'
+    Set-ChromePolicy -Name 'SafeBrowsingProtectionLevel' -Value 2 -Description 'Enable Safe Browsing (enhanced mode)'
 
     # 1.3 Allow Google Cast to connect to Cast devices on all IP addresses - Disabled
     # Restricts Cast to private IP addresses only (reduces exposure of media).
@@ -652,7 +655,12 @@ function Set-ChromeHardening {
     # also locks you out of devices with self-signed certificates, such as router,
     # NAS, printer or server management pages. Use another browser for those, or list
     # them in the SSLErrorOverrideAllowedForOrigins policy.
-    Set-ChromePolicy -Name 'SSLErrorOverrideAllowed' -Value 0 -Description 'Disallow proceeding past SSL warnings'
+    #Set-ChromePolicy -Name 'SSLErrorOverrideAllowed' -Value 0 -Description 'Disallow proceeding past SSL warnings'
+    #------------------
+    # The CIS benchmark says to disable this, but it makes Chrome unusable for
+    # many home and small-business devices. The policy is left enabled, but the
+    # allowlist below lets you add any self-signed sites you need to visit.
+    Set-ChromePolicy -Name 'SSLErrorOverrideAllowed' -Value 1 -Description 'Allow proceeding past SSL warnings'
 
     # 2.13 Disable proceeding from the Safe Browsing warning page - Enabled
     # Prevents users from bypassing Safe Browsing interstitial warnings.
@@ -776,110 +784,17 @@ function Set-ChromeHardening {
     # browsing lands in normal history (1.13). You lose a quick way to open a
     # session that isn't signed in to anything, which other browser profiles can
     # also give you.
-    Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 1 -Description 'Disable Incognito mode'
+    #Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 1 -Description 'Disable Incognito mode'
+    #------------------
+    # The CIS benchmark says to disable this, but it makes Chrome unusable for
+    # many home and small-business users. The policy is left available, so Incognito windows can be opened, but the user can't turn off history (1.13) or sync (3.7). If you want to disable Incognito mode, uncomment the line below.
+    #Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 1 -Description 'Disable Incognito mode'
+    #------------------
+    # The CIS benchmark says to disable this, but it makes Chrome unusable for
+    # many home and small-business users. The policy is left available, so Incognito windows can be opened, but the user can't turn off history (1.13) or sync (3.7). If you want to disable Incognito mode, uncomment the line below.
+    Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 0 -Description 'Disable Incognito mode'
 
     Write-Host "Chrome policies applied. Verify at chrome://policy/ after restarting Chrome." -ForegroundColor Cyan
-}
-
-# ---------------------------------------------------------------
-# SECTION 2: Windows 11 Stand-alone Password & Account Policies
-# CIS Windows 11 Benchmark v5.0.0 - Section 1
-#
-# These apply to local accounts only. Signing in with a Microsoft account uses
-# that account's password rules, set online, and a Windows Hello PIN has its
-# own rules. Existing passwords aren't checked against new rules until they
-# are next changed.
-# ---------------------------------------------------------------
-function Set-PasswordPolicy {
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = 'Stop'
-
-    Write-Banner "Applying Windows 11 Password & Lockout Policies" '.'
-
-    # 1.1.1 Enforce password history - 24 or more
-    # 1.1.2 Maximum password age - 365 or fewer, but not 0
-    # 1.1.3 Minimum password age - 1 or more days
-    # 1.1.4 Minimum password length - 14 or more
-    # These are set via net accounts (local accounts).
-    # History: a new password can't match any of the last 24.
-    # Max age: local passwords older than 365 days must be changed at next sign-in,
-    #   including any that are already older than that. 0 would mean never expire.
-    #   (NIST now advises against forced changes; CIS still asks for a limit.)
-    # Min age: one day between changes, so the 24-password history can't be beaten
-    #   by changing the password 24 times in a row to get back to the old one.
-    # Min length: 14 characters is the most Windows enforces without the separate
-    #   RelaxMinimumPasswordLengthLimits setting.
-
-    # $ErrorActionPreference doesn't cover programs like net and secedit, so check
-    # their exit codes. stderr is left alone: under 'Stop', redirecting it would
-    # turn any message into a terminating error in Windows PowerShell 5.1.
-    net accounts /minpwlen:14 /maxpwage:365 /minpwage:1 /uniquepw:24 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "[Password] net accounts failed (exit $LASTEXITCODE); history/age/length not set"
-    } else {
-        Write-Host "  [Password] History=24, MaxAge=365, MinAge=1, MinLength=14" -ForegroundColor Green
-        Write-Host "    # Reduces password reuse, forces periodic changes, and increases strength" -ForegroundColor DarkGray
-    }
-
-    # 1.1.5 Password must meet complexity requirements - Enabled
-    # 1.1.7 Store passwords using reversible encryption - Disabled
-    # These require secedit or Local Security Policy. Using a temporary INF.
-    # Complexity: at least 3 of uppercase, lowercase, digit and symbol, and not
-    #   containing the account name.
-    # Reversible encryption: if enabled, Windows keeps passwords in a form that can
-    #   be turned back into plain text. Only some old authentication protocols need
-    #   it; disabled is the Windows default.
-    # secedit only changes the settings listed in the INF; the .sdb is a scratch
-    # database it needs, and both are deleted afterwards.
-
-    $inf = @"
-[Unicode]
-Unicode=yes
-[System Access]
-PasswordComplexity = 1
-ClearTextPassword = 0
-[Version]
-signature="`$CHICAGO`$"
-Revision=1
-"@
-
-    $infPath = "$env:TEMP\cis_password.inf"
-    $sdbPath = "$env:TEMP\cis_password.sdb"
-    $inf | Out-File -FilePath $infPath -Encoding Unicode -Force
-    $seceditOut = secedit /configure /db $sdbPath /cfg $infPath /areas SECURITYPOLICY
-    $seceditRc = $LASTEXITCODE
-    Remove-Item $infPath, $sdbPath -ErrorAction SilentlyContinue
-    # 0 = done; 3 = done, but some settings gave warnings; anything else failed.
-    # secedit prints its errors to stdout, so show that output when it isn't 0.
-    if ($seceditRc -eq 0 -or $seceditRc -eq 3) {
-        Write-Host "  [Password] Complexity Enabled, Reversible encryption Disabled" -ForegroundColor Green
-        Write-Host "    # Requires mixed character types; prevents storing passwords in reversible form" -ForegroundColor DarkGray
-        if ($seceditRc -eq 3) {
-            Write-Host "    # secedit reported warnings; see $env:windir\security\logs\scesrv.log" -ForegroundColor Yellow
-        }
-    } else {
-        $seceditOut | Where-Object { $_ } | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-        Write-Fail "[Password] secedit failed (exit $seceditRc); complexity/reversible encryption not set"
-    }
-
-    # 1.2.1 Account lockout duration - 15 or more minutes
-    # 1.2.2 Account lockout threshold - 5 or fewer (not 0)
-    # 1.2.4 Reset account lockout counter after - 15 or more minutes
-    # Threshold: after 5 wrong passwords a local account is locked. 0 means never
-    #   lock, which leaves password guessing unlimited, so CIS fails it.
-    # Duration: the lock clears by itself after 15 minutes; no admin is needed.
-    # Reset counter: failed attempts are forgotten after 15 minutes without one.
-    #   Windows requires this to be no longer than the duration.
-    # Anyone who can try to sign in, including over the network (SMB, RDP), can
-    # lock an account on purpose. The 15-minute limit keeps that a nuisance.
-    # Not set here: 1.2.3 "Allow Administrator account lockout".
-    net accounts /lockoutthreshold:5 /lockoutduration:15 /lockoutwindow:15 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "[Lockout] net accounts failed (exit $LASTEXITCODE); lockout policy not set"
-    } else {
-        Write-Host "  [Lockout] Threshold=5, Duration=15 min, Reset=15 min" -ForegroundColor Green
-        Write-Host "    # Limits brute-force attempts while allowing reasonable recovery" -ForegroundColor DarkGray
-    }
 }
 
 # ---------------------------------------------------------------
@@ -897,12 +812,6 @@ function Disable-UnneededService {
 
     Write-Banner "Disabling Unnecessary Windows Services" '.'
 
-    # Bluetooth hands-free profile. Without it, Bluetooth headsets still play
-    # audio but their microphones stop working (calls, meetings).
-    Disable-ServiceIfExists -Name 'BTAGService' -Description 'Bluetooth Audio Gateway (L2 - reduces wireless attack surface)'
-    # Core Bluetooth service. Without it, NO Bluetooth device works: mice,
-    # keyboards, headphones, phones. Comment this out on a PC that uses any.
-    Disable-ServiceIfExists -Name 'bthserv' -Description 'Bluetooth Support Service (L2 - reduces wireless attack surface)'
     # Old SMB1 network-neighbourhood browsing. Not installed on Windows 11 unless
     # SMB1 was added back, so this usually reports "not present".
     Disable-ServiceIfExists -Name 'Browser' -Description 'Computer Browser (legacy NetBIOS service - L1)'
@@ -911,9 +820,6 @@ function Disable-UnneededService {
     # Game controller input for games that use Microsoft's GameInput API. Some
     # games may stop seeing controllers.
     Disable-ServiceIfExists -Name 'GameInputSvc' -Description 'GameInput Service (L2 - reduces DMA input capture risk)'
-    # Windows location. Without it, apps can't get your location, and automatic
-    # time zone and Find My Device stop working.
-    Disable-ServiceIfExists -Name 'lfsvc' -Description 'Geolocation Service (L2 - reduces location tracking)'
     # Lets other computers read and change this PC's registry over the network.
     # Already disabled by default on Windows 11; this makes sure it stays off.
     Disable-ServiceIfExists -Name 'RemoteRegistry' -Description 'Remote Registry (L1 - reduces remote attack surface)'
@@ -924,12 +830,6 @@ function Disable-UnneededService {
     # connections. Only present if Chrome Remote Desktop was set up on this PC.
     # (Unrelated to RemoteAccess above, despite the names.)
     Disable-ServiceIfExists -Name 'chromoting' -Description 'Chrome Remote Desktop Service (blocks remote control of this PC)'
-    # Finds UPnP devices on the network. Without it, media servers, smart TVs and
-    # some printers don't show up under Network in Explorer.
-    Disable-ServiceIfExists -Name 'SSDPSRV' -Description 'SSDP Discovery (L1 - reduces network discovery)'
-    # Lets this PC offer UPnP services, e.g. media streaming to a TV. Depends on
-    # SSDP Discovery above.
-    Disable-ServiceIfExists -Name 'upnphost' -Description 'UPnP Device Host (L1 - reduces network discovery)'
     # The three Xbox services: sign-in, cloud saves and multiplayer networking.
     # Without them, the Xbox app, Game Pass and Xbox Live features in PC games
     # stop working.
@@ -2983,7 +2883,6 @@ try {
 
     # Hardening, before anything is installed
     Invoke-Step 'cis-chrome' { Set-ChromeHardening }
-    Invoke-Step 'cis-passwords' { Set-PasswordPolicy }
     Invoke-Step 'cis-services' { Disable-UnneededService }
     Invoke-Step 'cis-registry' { Set-SecurityRegistry }
     Invoke-Step 'dns' { Set-SecureDns }
