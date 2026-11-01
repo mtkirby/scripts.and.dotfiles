@@ -35,6 +35,15 @@
        - defendersettings: real-time, cloud, sample submission, Dev Drive,
                           Controlled folder access; checks Tamper protection
     3. Updates:
+       - patchwindows:    Windows Update, drivers and other Microsoft products
+                          included; optional updates listed, not installed.
+                          Turns on updates for other Microsoft products and
+                          restart notifications, and fails if Windows Update is
+                          off, paused or redirected. Never restarts the PC.
+       - patchoffice:     Click-to-Run Office (Microsoft 365, Office 2019-2024):
+                          version and channel, fails if its updates are off or
+                          redirected, and starts an update check. Never closes
+                          open Office apps.
        - patchchoco:      choco upgrade all
        - patchmsstore:    winget upgrades from the Microsoft Store, then a Store
                           update scan
@@ -60,13 +69,19 @@
     6. protectionhistory: the last 7 days of Defender's Protection history,
                           written to the Desktop and opened in Notepad at the end
 
+    Any run that changes registry values (including service startup types)
+    writes registry-undo-<date>-<time>.reg to the log folder, with those values
+    as they were before; importing it puts them back. The first run's file holds
+    the PC's original settings, since later runs only change what has drifted.
+    The file's header lists what it can't undo.
+
     The settings to edit (approved Chrome extensions, JavaScript optimizer sites,
     Office's old file formats, Controlled folder access apps, DNS servers) are at
     the top of the script.
 
 .PARAMETER LogDir
-    Where the transcript and the Defender scan log go. Transcripts older than 30 days
-    are deleted.
+    Where the transcript, the Defender scan log and the registry undo files go.
+    Transcripts older than 30 days are deleted; undo files are kept.
 
 .NOTES
     - Must be run as Administrator. Run it as yourself, not SYSTEM: winget only works
@@ -105,6 +120,10 @@ $script:Notes = [System.Collections.Generic.List[string]]::new()
 $script:HistoryFile = $null
 # Set by the eekscan step when Emsisoft finds something; also opened at the end
 $script:EekLog = $null
+# Registry values this run changed, as they were before, for the undo file
+# (see Set-TrackedValue); Seen holds each key and value name once
+$script:RegistryUndo = [System.Collections.Generic.List[object]]::new()
+$script:RegistryUndoSeen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
 # ---------------------------------------------------------------
 # Approved Chrome extensions: EDIT THIS LIST
@@ -251,6 +270,153 @@ $WingetProgress = '^\s*[-\\|/]?\s*$|[\u2588\u2592]{3,}'
 
 # Hardening helpers
 
+# --- Registry undo file ---
+# Every registry value the hardening steps write goes through Set-TrackedValue
+# (or Remove-TrackedValue), which notes the value as it was if the write
+# changed it. Save-RegistryUndo then writes those old values to a .reg file
+# in the log folder, which puts them back when imported.
+
+# A value's type and data, or $null if it (or its key) doesn't exist.
+# '(default)' is the key's unnamed default value.
+function Get-RegistryValueState {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Name
+    )
+    $key = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if (-not $key) { return $null }
+    $n = if ($Name -eq '(default)') { '' } else { $Name }
+    if ($key.GetValueNames() -notcontains $n) { return $null }
+    [pscustomobject]@{
+        Kind = "$($key.GetValueKind($n))"
+        # Unexpanded, so %SystemRoot% and the like go back as they were
+        Data = $key.GetValue($n, $null, 'DoNotExpandEnvironmentNames')
+    }
+}
+
+# One value as a .reg file line; a $null state is a line that deletes it
+function ConvertTo-RegLine {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Name,
+        $State
+    )
+    $quote = { param($s) '"' + ($s -replace '\\', '\\' -replace '"', '\"') + '"' }
+    $hex = { param([byte[]]$b) ($b | ForEach-Object { $_.ToString('x2') }) -join ',' }
+    # Text types other than plain strings are stored as UTF-16 with a closing null
+    $utf16 = { param([string]$s) [Text.Encoding]::Unicode.GetBytes("$s`0") }
+    $lhs = if ($Name -eq '' -or $Name -eq '(default)') { '@' } else { & $quote $Name }
+    if ($null -eq $State) { return "$lhs=-" }
+    $data = $State.Data
+    switch ($State.Kind) {
+        'String' {
+            # A quoted string can't hold a line break; hex(1) is the same type
+            if ("$data" -match '[\r\n]') { "$lhs=hex(1):$(& $hex (& $utf16 "$data"))" }
+            else { "$lhs=$(& $quote "$data")" }
+        }
+        'DWord' { "$lhs=dword:$(([int]$data).ToString('x8'))" }
+        'QWord' { "$lhs=hex(b):$(& $hex ([BitConverter]::GetBytes([long]$data)))" }
+        'ExpandString' { "$lhs=hex(2):$(& $hex (& $utf16 "$data"))" }
+        'MultiString' { "$lhs=hex(7):$(& $hex (& $utf16 ((@($data) | ForEach-Object { "$_`0" }) -join '')))" }
+        'Binary' { "$lhs=hex:$(& $hex ([byte[]]$data))" }
+        default { "$lhs=hex(0):$(& $hex ([byte[]]@($data)))" }
+    }
+}
+
+# After a write: if the value is now different from $Before, note $Before for
+# the undo file. Only a value's first change in a run is kept, which is how it
+# was before the script touched it.
+function Add-RegistryUndo {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Name,
+        $Before
+    )
+    $key = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if (-not $key) { return }
+    $old = ConvertTo-RegLine -Name $Name -State $Before
+    if ($old -eq (ConvertTo-RegLine -Name $Name -State (Get-RegistryValueState -Path $Path -Name $Name))) { return }
+    # A user who wasn't signed in has their registry loaded as HKU\CIS_<sid>
+    # (see Invoke-InEachUserHive); it's HKU\<sid> whenever they're signed in
+    $keyName = $key.Name -replace '^HKEY_USERS\\CIS_(S-1-[\d-]+)', 'HKEY_USERS\$1'
+    $n = if ($Name -eq '(default)') { '' } else { $Name }
+    if (-not $script:RegistryUndoSeen.Add("$keyName`0$n")) { return }
+    $script:RegistryUndo.Add([pscustomobject]@{ Key = $keyName; Line = $old; Step = $script:Step })
+}
+
+# Set-ItemProperty, creating the key if needed, with the old value noted for
+# the undo file
+function Set-TrackedValue {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][AllowEmptyString()]$Value,
+        [string]$Type = 'DWord'
+    )
+    $before = Get-RegistryValueState -Path $Path -Name $Name
+    if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
+    Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force
+    Add-RegistryUndo -Path $Path -Name $Name -Before $before
+}
+
+# Remove-ItemProperty, with the old value noted for the undo file
+function Remove-TrackedValue {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $before = Get-RegistryValueState -Path $Path -Name $Name
+    if ($null -eq $before) { return }
+    Remove-ItemProperty -Path $Path -Name $Name -Force
+    Add-RegistryUndo -Path $Path -Name $Name -Before $before
+}
+
+# Write the undo file, if this run changed any registry values
+function Save-RegistryUndo {
+    param([Parameter(Mandatory)][string]$File)
+    if ($script:RegistryUndo.Count -eq 0) { return $null }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add('Windows Registry Editor Version 5.00')
+    $lines.Add('')
+    foreach ($comment in @(
+        "Written by dailyrunme.ps1 on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')."
+        "Puts back the $($script:RegistryUndo.Count) registry values that run changed, as they were before it."
+        'A value that didn''t exist before is deleted; keys the script created are left, empty.'
+        ''
+        'dailyrunme.ps1 sets them again on its next run: take the setting out of the'
+        'script (or stop running it) first.'
+        ''
+        'To use: double-click this file, or run  reg import "<this file>"  as'
+        'Administrator, then restart Windows (and Chrome).'
+        '  - HKEY_USERS\S-1-... entries are other user accounts; each only applies'
+        '    while that user is signed in.'
+        '  - HKEY_USERS\CIS_Default entries are the Default profile (for new accounts);'
+        '    first run:  reg load HKU\CIS_Default C:\Users\Default\NTUSER.DAT'
+        '    and afterwards:  reg unload HKU\CIS_Default'
+        ''
+        'Not in this file, as they aren''t registry values (or Windows won''t take'
+        'them from a .reg file): DNS servers and DoH addresses, the hosts file'
+        '(backed up beside this file), firewall rules, DEP (bcdedit), PowerShell 2.0,'
+        'the PowerShell log size, Defender settings and ASR rules, file permissions,'
+        'installed Windows updates, and the Microsoft Update registration (turn off'
+        '"Receive updates for other Microsoft products" in Settings > Windows Update'
+        '> Advanced options).'
+    )) { $lines.Add("; $comment".TrimEnd()) }
+
+    # Other accounts' keys last: if they can't be written (user not signed in),
+    # everything before them is already in
+    $entries = @($script:RegistryUndo | Where-Object { $_.Key -notlike 'HKEY_USERS\*' }) +
+        @($script:RegistryUndo | Where-Object { $_.Key -like 'HKEY_USERS\*' })
+    foreach ($group in $entries | Group-Object Key) {
+        $lines.Add('')
+        $lines.Add("; $(($group.Group.Step | Select-Object -Unique) -join ', ')")
+        $lines.Add("[$($group.Name)]")
+        foreach ($e in $group.Group) { $lines.Add($e.Line) }
+    }
+    # UTF-16 with a byte order mark, as regedit writes them
+    Set-Content -LiteralPath $File -Value $lines -Encoding Unicode
+    $File
+}
+
 function Set-ChromePolicy {
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -258,11 +424,7 @@ function Set-ChromePolicy {
         [string]$Type = 'DWord',
         [string]$Description
     )
-    $path = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
-    if (-not (Test-Path $path)) {
-        New-Item -Path $path -Force | Out-Null
-    }
-    Set-ItemProperty -Path $path -Name $Name -Value $Value -Type $Type -Force
+    Set-TrackedValue -Path 'HKLM:\SOFTWARE\Policies\Google\Chrome' -Name $Name -Value $Value -Type $Type
     Write-Host "  [Chrome] $Name = $Value  # $Description" -ForegroundColor Green
 }
 
@@ -275,7 +437,12 @@ function Set-ChromePolicyList {
         [string]$Description
     )
     $path = "HKLM:\SOFTWARE\Policies\Google\Chrome\$Name"
+    # The old entries, for the undo file
+    $before = @{}
     if (Test-Path $path) {
+        foreach ($n in (Get-Item -LiteralPath $path).GetValueNames()) {
+            $before[$n] = Get-RegistryValueState -Path $path -Name $n
+        }
         Remove-Item -Path $path -Recurse -Force
     }
     New-Item -Path $path -Force | Out-Null
@@ -284,6 +451,8 @@ function Set-ChromePolicyList {
         New-ItemProperty -Path $path -Name "$i" -Value $v -PropertyType String -Force | Out-Null
         $i++
     }
+    $names = @($before.Keys) + @((Get-Item -LiteralPath $path).GetValueNames()) | Sort-Object -Unique
+    foreach ($n in $names) { Add-RegistryUndo -Path $path -Name $n -Before $before[$n] }
     Write-Host "  [Chrome] $Name = [$($Values -join ', ')]  # $Description" -ForegroundColor Green
 }
 
@@ -345,12 +514,17 @@ function Disable-ServiceIfExists {
     if ($svc) {
         # Some services refuse a startup-type change even for admins; say so
         # rather than reporting them disabled
+        # The startup type is the service key's Start value, so it can go in the
+        # undo file (Windows reads it at the next restart)
+        $svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)"
+        $before = Get-RegistryValueState -Path $svcKey -Name 'Start'
         try {
             Set-Service -Name $Name -StartupType Disabled -ErrorAction Stop
         } catch {
             Write-Fail "[Service] Couldn't disable ${Name}: $($_.Exception.Message)"
             return
         }
+        Add-RegistryUndo -Path $svcKey -Name 'Start' -Before $before
         # A service that won't stop now is still disabled, so it won't start after a restart
         Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
         if ((Get-Service -Name $Name).Status -ne 'Stopped') {
@@ -372,8 +546,7 @@ function Set-RegistryValue {
         [string]$Type = 'DWord',
         [string]$Description
     )
-    if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
-    Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force
+    Set-TrackedValue -Path $Path -Name $Name -Value $Value -Type $Type
     Write-Host "  [Registry] $Name = $Value  # $Description" -ForegroundColor Green
 }
 
@@ -854,8 +1027,7 @@ function Set-SecurityRegistry {
     # Setting 0 turns automatic logon off, but doesn't delete a DefaultPassword
     # value that's already there; check for it and remove it.
     $mssPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-    if (-not (Test-Path $mssPath)) { New-Item -Path $mssPath -Force | Out-Null }
-    Set-ItemProperty -Path $mssPath -Name 'AutoAdminLogon' -Value 0 -Type DWord -Force
+    Set-TrackedValue -Path $mssPath -Name 'AutoAdminLogon' -Value 0
     Write-Host "  [Registry] AutoAdminLogon = 0  # Disable automatic logon (MSS)" -ForegroundColor Green
 
     # WDigest Authentication - Disabled (reduces credential theft risk)
@@ -865,8 +1037,7 @@ function Set-SecurityRegistry {
     # it to 1 and wait for the next sign-in, so setting 0 records the intended
     # state. If you ever find it at 1, treat that as a sign of compromise.
     $wdigestPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest'
-    if (-not (Test-Path $wdigestPath)) { New-Item -Path $wdigestPath -Force | Out-Null }
-    Set-ItemProperty -Path $wdigestPath -Name 'UseLogonCredential' -Value 0 -Type DWord -Force
+    Set-TrackedValue -Path $wdigestPath -Name 'UseLogonCredential' -Value 0
     Write-Host "  [Registry] WDigest UseLogonCredential = 0  # Disable WDigest (reduces credential exposure in memory)" -ForegroundColor Green
 }
 
@@ -913,8 +1084,7 @@ function Set-SecureDns {
     # DNS fails if DoH can't be reached). This is the "Configure DNS over HTTPS
     # (DoH) name resolution" Group Policy, which CIS asks to be at least "Allow".
     $dohPolicyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
-    if (-not (Test-Path $dohPolicyPath)) { New-Item -Path $dohPolicyPath -Force | Out-Null }
-    Set-ItemProperty -Path $dohPolicyPath -Name 'DoHPolicy' -Value 2 -Type DWord -Force
+    Set-TrackedValue -Path $dohPolicyPath -Name 'DoHPolicy' -Value 2
     Write-Host "  [Registry] DoHPolicy = 2  # Allow DoH: prefer encrypted DNS, plain DNS as fallback" -ForegroundColor Green
 
     # Point every physical adapter at the servers. Windows keeps IPv4 and IPv6
@@ -966,7 +1136,7 @@ function Repair-HostsFile {
     $dbPath = if ($tcpipValues -and $tcpipValues.PSObject.Properties['DataBasePath']) { $tcpipValues.DataBasePath } else { $null }
     # Compare expanded, since the value is usually stored unexpanded
     if ($dbPath -and [Environment]::ExpandEnvironmentVariables($dbPath) -ne [Environment]::ExpandEnvironmentVariables($defaultDir)) {
-        Set-ItemProperty -Path $tcpip -Name 'DataBasePath' -Value $defaultDir -Type ExpandString -Force
+        Set-TrackedValue -Path $tcpip -Name 'DataBasePath' -Value $defaultDir -Type ExpandString
         Write-Fail "[Hosts] Windows was reading the hosts file from $dbPath; set back to $defaultDir"
     }
     $hosts = Join-Path ([Environment]::ExpandEnvironmentVariables($defaultDir)) 'hosts'
@@ -1256,9 +1426,8 @@ function Set-OfficeHardening {
                       'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Internet Explorer\Main\FeatureControl') {
         foreach ($feature in $ieFeatures.Keys) {
             $key = "$root\$feature"
-            if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
             foreach ($exe in $officeExes) {
-                Set-ItemProperty -Path $key -Name $exe -Value 1 -Type DWord -Force
+                Set-TrackedValue -Path $key -Name $exe -Value 1
             }
         }
     }
@@ -1283,9 +1452,8 @@ function Set-OfficeHardening {
     # (jscript.dll) that attackers exploit; 69632 (0x11000) blocks it in the
     # Internet and Restricted Sites zones.
     $jscriptPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_RESTRICT_LEGACY_JSCRIPT_PER_SECURITY_ZONE'
-    if (-not (Test-Path $jscriptPath)) { New-Item -Path $jscriptPath -Force | Out-Null }
     foreach ($exe in $officeExes) {
-        Set-ItemProperty -Path $jscriptPath -Name $exe -Value 69632 -Type DWord -Force
+        Set-TrackedValue -Path $jscriptPath -Name $exe -Value 69632
     }
     Write-Host "  [Office] Legacy JScript blocked in Office (CIS 1.3.2)" -ForegroundColor Green
 
@@ -1534,11 +1702,10 @@ function Set-OfficeHardening {
             $key = "$root\Software\Policies\Microsoft\$($s[0])"
             try {
                 if ($null -eq $s[2]) {
-                    if (Test-Path $key) { Remove-ItemProperty -Path $key -Name $s[1] -ErrorAction SilentlyContinue }
+                    Remove-TrackedValue -Path $key -Name $s[1]
                 } else {
-                    if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
                     $type = if ($s[2] -is [string]) { 'String' } else { 'DWord' }
-                    Set-ItemProperty -Path $key -Name $s[1] -Value $s[2] -Type $type -Force
+                    Set-TrackedValue -Path $key -Name $s[1] -Value $s[2] -Type $type
                 }
                 $done++
             } catch {
@@ -1579,8 +1746,8 @@ function Set-ShortcutProtection {
     foreach ($type in 'lnkfile', 'InternetShortcut', 'piffile') {
         $key = "HKLM:\SOFTWARE\Classes\$type"
         if (-not (Test-Path $key)) { continue }
-        Remove-ItemProperty -Path $key -Name 'NeverShowExt' -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $key -Name 'AlwaysShowExt' -Value '' -Type String -Force
+        Remove-TrackedValue -Path $key -Name 'NeverShowExt'
+        Set-TrackedValue -Path $key -Name 'AlwaysShowExt' -Value '' -Type String
     }
     Write-Host "  [Explorer] .lnk, .url and .pif extensions always shown" -ForegroundColor Green
 
@@ -1590,8 +1757,7 @@ function Set-ShortcutProtection {
         param($root, $label)
         try {
             $key = "$root\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
-            if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
-            Set-ItemProperty -Path $key -Name 'HideFileExt' -Value 0 -Type DWord -Force
+            Set-TrackedValue -Path $key -Name 'HideFileExt' -Value 0
             Write-Host "  [Explorer] $label`: file name extensions shown" -ForegroundColor Green
         } catch {
             Write-Fail "[Explorer] ${label}: couldn't turn on file name extensions: $($_.Exception.Message)"
@@ -1635,7 +1801,7 @@ function Set-ShortcutProtection {
     # instead. A real .hta can still be run with: mshta.exe C:\path\file.hta
     $htaCommand = 'HKLM:\SOFTWARE\Classes\htafile\shell\open\command'
     if (Test-Path $htaCommand) {
-        Set-ItemProperty -Path $htaCommand -Name '(default)' -Value '"%SystemRoot%\System32\notepad.exe" "%1"' -Type ExpandString -Force
+        Set-TrackedValue -Path $htaCommand -Name '(default)' -Value '"%SystemRoot%\System32\notepad.exe" "%1"' -Type ExpandString
         Write-Host "  [Explorer] .hta files open in Notepad instead of running" -ForegroundColor Green
     }
 }
@@ -1676,8 +1842,7 @@ function Set-ExplorerView {
         foreach ($s in $settings) {
             $key = "$root\Software\Microsoft\Windows\CurrentVersion\Explorer\$($s.Key)"
             try {
-                if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
-                Set-ItemProperty -Path $key -Name $s.Name -Value $s.Value -Type DWord -Force
+                Set-TrackedValue -Path $key -Name $s.Name -Value $s.Value
             } catch {
                 $errors += "$($s.What): $($_.Exception.Message)"
             }
@@ -1893,7 +2058,7 @@ function Disable-DeveloperMode {
         Write-Host '  [Developer Mode] Off' -ForegroundColor Green
         return
     }
-    Set-ItemProperty -Path $key -Name $name -Value 0 -Type DWord -Force
+    Set-TrackedValue -Path $key -Name $name -Value 0
     if ((& $read) -eq 0) {
         Write-Fail '[Developer Mode] Was on; turned it off. If you (or a developer tool you installed) didn''t turn it on, find out what did'
     } else {
@@ -2154,6 +2319,284 @@ function Update-DefenderSignature {
         & $show
     } catch {
         Write-Fail "Defender signature update: $($_.Exception.Message)"
+    }
+}
+
+# patchwindows: Windows Update, through its own API (the one Settings uses), so
+# nothing has to be installed. Installs what Windows Update would install on its
+# own, drivers included, now rather than on its schedule; optional updates
+# (Settings > Windows Update > Advanced options > Optional updates) are listed,
+# not installed. Never restarts the PC. Also turns on, in Settings > Windows
+# Update > Advanced options:
+#   - Receive updates for other Microsoft products: Office, Visual C++
+#     runtimes, .NET and so on, through Microsoft Update. Turning it off in
+#     Settings undoes it (as well as the registry undo file).
+#   - Notify me when a restart is required to finish updating
+# and fails if Windows Update has been switched off, paused, or pointed at
+# another update server, which malware does to keep its holes open.
+function Update-Windows {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    $ux = 'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings'
+    Set-TrackedValue -Path $ux -Name 'AllowMUUpdateService' -Value 1
+    Set-TrackedValue -Path $ux -Name 'RestartNotificationsAllowed2' -Value 1
+    Write-Host '  [Windows Update] Restart notifications on' -ForegroundColor Green
+
+    # Microsoft Update is a second update service; the Settings switch registers
+    # it, as this does. Flags 7: register now, or at next restart if it can't,
+    # and use it for automatic updates too.
+    $muId = '7971f918-a847-4430-9279-4a52d1efe18d'
+    $useMu = $false
+    try {
+        $serviceManager = New-Object -ComObject Microsoft.Update.ServiceManager
+        if (@($serviceManager.Services | Where-Object { $_.ServiceID -eq $muId }).Count -eq 0) {
+            [void]$serviceManager.AddService2($muId, 7, '')
+            Write-Host '  [Windows Update] Updates for other Microsoft products: turned on' -ForegroundColor Green
+        } else {
+            Write-Host '  [Windows Update] Updates for other Microsoft products: on' -ForegroundColor Green
+        }
+        $useMu = $true
+    } catch {
+        Write-Fail "[Windows Update] Couldn't turn on updates for other Microsoft products: $($_.Exception.Message)"
+    }
+
+    # Switched off, paused or redirected
+    foreach ($name in 'wuauserv', 'UsoSvc') {
+        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if ($svc -and "$($svc.StartType)" -eq 'Disabled') {
+            Write-Fail "[Windows Update] The $($svc.DisplayName) service ($name) is disabled. Unless you did that: Set-Service $name -StartupType Manual"
+        }
+    }
+    $wuPolicy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    $policyValue = {
+        param($path, $name)
+        $state = Get-RegistryValueState -Path $path -Name $name
+        if ($state) { $state.Data } else { $null }
+    }
+    if ((& $policyValue "$wuPolicy\AU" 'NoAutoUpdate') -eq 1) {
+        Write-Fail "[Windows Update] Automatic updates are turned off by policy ($wuPolicy\AU NoAutoUpdate = 1)"
+    }
+    if ((& $policyValue $wuPolicy 'DisableWindowsUpdateAccess') -eq 1) {
+        Write-Fail "[Windows Update] Windows Update is blocked by policy ($wuPolicy DisableWindowsUpdateAccess = 1)"
+    }
+    if ((& $policyValue $wuPolicy 'DoNotConnectToWindowsUpdateInternetLocations') -eq 1) {
+        Write-Fail "[Windows Update] Windows Update is cut off from Microsoft by policy ($wuPolicy DoNotConnectToWindowsUpdateInternetLocations = 1)"
+    }
+    # A stand-alone PC gets updates from Microsoft; an update server (WSUS) is
+    # for company networks
+    if ((& $policyValue "$wuPolicy\AU" 'UseWUServer') -eq 1) {
+        Write-Fail "[Windows Update] Updates come from $(& $policyValue $wuPolicy 'WUServer') instead of Microsoft ($wuPolicy\AU UseWUServer = 1)"
+    }
+    $uxValues = Get-ItemProperty -Path $ux -ErrorAction SilentlyContinue
+    if ($uxValues) {
+        foreach ($p in $uxValues.PSObject.Properties | Where-Object { $_.Name -match '^Pause.*(ExpiryTime|EndTime)$' }) {
+            $until = [datetime]::MinValue
+            if ([datetime]::TryParse("$($p.Value)", [ref]$until) -and $until -gt (Get-Date)) {
+                Write-Fail "[Windows Update] Updates are paused until $($until.ToString('yyyy-MM-dd')) ($($p.Name)). Unless you did that: Settings > Windows Update > Resume updates"
+                break
+            }
+        }
+    }
+
+    try {
+        if ((New-Object -ComObject Microsoft.Update.SystemInfo).RebootRequired) {
+            Write-Host '  [Windows Update] A restart from earlier updates is waiting; some updates may not install until then' -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Verbose 'restart status unknown'
+    }
+
+    Write-Banner 'Searching Windows Update' '.'
+    $session = New-Object -ComObject Microsoft.Update.Session
+    $session.ClientApplicationID = 'dailyrunme'
+    $searcher = $session.CreateUpdateSearcher()
+    if ($useMu) {
+        # 3 = a service named by ServiceID, here Microsoft Update (which includes
+        # everything Windows Update has)
+        $searcher.ServerSelection = 3
+        $searcher.ServiceID = $muId
+    }
+    # No Type: both software and driver updates. Hidden ones were hidden on purpose.
+    try {
+        $found = @($searcher.Search('IsInstalled=0 and IsHidden=0').Updates)
+    } catch {
+        Write-Fail "[Windows Update] Search failed: $($_.Exception.Message)"
+        return
+    }
+    $optional = @($found | Where-Object { $_.BrowseOnly })
+    $wanted = @($found | Where-Object { -not $_.BrowseOnly })
+    foreach ($u in $optional) { Write-Host "  [Windows Update] Optional, not installed: $($u.Title)" -ForegroundColor DarkGray }
+    if ($wanted.Count -eq 0) {
+        Write-Host '  [Windows Update] Up to date' -ForegroundColor Green
+        return
+    }
+    Write-Host "  [Windows Update] $($wanted.Count) update(s) to install" -ForegroundColor Cyan
+
+    # One at a time: some updates must install on their own, and one failing
+    # doesn't hold up the rest. 2 = succeeded, 3 = succeeded with errors.
+    $results = @{ 0 = 'not started'; 1 = 'in progress'; 2 = 'installed'; 3 = 'installed with errors'; 4 = 'failed'; 5 = 'aborted' }
+    $restart = $false
+    $i = 0
+    foreach ($u in $wanted) {
+        $i++
+        $kind = if ($u.Type -eq 2) { 'Driver' } else { 'Update' }
+        $title = "[$kind] $($u.Title)"
+        Write-Host "  ($i/$($wanted.Count)) $title" -ForegroundColor Cyan
+        if ($u.InstallationBehavior.CanRequestUserInput) {
+            Write-Host '    Skipped: it asks questions while installing; install it from Settings > Windows Update' -ForegroundColor Yellow
+            continue
+        }
+        try {
+            if (-not $u.EulaAccepted) { $u.AcceptEula() }
+            $one = New-Object -ComObject Microsoft.Update.UpdateColl
+            [void]$one.Add($u)
+            if (-not $u.IsDownloaded) {
+                $downloader = $session.CreateUpdateDownloader()
+                $downloader.Updates = $one
+                $dl = $downloader.Download()
+                if ($dl.ResultCode -notin 2, 3) {
+                    Write-Fail "[Windows Update] Download $($results[[int]$dl.ResultCode]) (0x$('{0:X8}' -f $dl.HResult)): $title"
+                    continue
+                }
+            }
+            $installer = $session.CreateUpdateInstaller()
+            $installer.Updates = $one
+            # No installer windows; older Windows Update clients don't have the setting
+            try { $installer.ForceQuiet = $true } catch { Write-Verbose 'ForceQuiet not available' }
+            $result = $installer.Install()
+            $code = [int]$result.ResultCode
+            if ($code -in 2, 3) {
+                Write-Host "    $($results[$code])" -ForegroundColor Green
+            } else {
+                Write-Fail "[Windows Update] Install $($results[$code]) (0x$('{0:X8}' -f $result.GetUpdateResult(0).HResult)): $title"
+            }
+            if ($result.RebootRequired) { $restart = $true }
+        } catch {
+            Write-Fail "[Windows Update] ${title}: $($_.Exception.Message)"
+        }
+    }
+    if ($restart) { $script:Notes.Add('Restart Windows to finish installing Windows updates') }
+}
+
+# patchoffice: Microsoft 365 Apps and Office 2019/2021/2024 install as Click-to-Run,
+# which updates itself with its own updater, not through Windows Update. This
+# reports its version, channel and update settings, fails if updates are off,
+# blocked or redirected away from Microsoft's servers, and asks the updater to
+# check now. The updater works in the background and doesn't report back, so a
+# new version shows on the next run (compared with the last run's version, kept
+# in the log folder) or in any Office app under File > Account. Office apps are
+# never closed; an update waits until they are. MSI-installed Office (2016 and
+# older, mostly business copies) is updated through Microsoft Update instead, by
+# patchwindows.
+function Update-Office {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    $cfgPath = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    $cfg = Get-ItemProperty -Path $cfgPath -ErrorAction SilentlyContinue
+    if (-not $cfg) {
+        Write-Host '  [Office] No Click-to-Run Office installed; MSI Office, if any, is updated by patchwindows' -ForegroundColor DarkGray
+        return
+    }
+    $get = {
+        param($from, $name)
+        if ($from -and $from.PSObject.Properties[$name]) { "$($from.$name)" } else { '' }
+    }
+
+    # Version, against the last run's
+    $version = & $get $cfg 'VersionToReport'
+    $versionFile = Join-Path $LogDir 'office-version.txt'
+    $last = if (Test-Path -LiteralPath $versionFile) { "$(Get-Content -LiteralPath $versionFile -TotalCount 1)".Trim() } else { '' }
+    $products = (& $get $cfg 'ProductReleaseIds') -replace ',', ', '
+    if ($last -and $version -and $last -ne $version) {
+        Write-Host "  [Office] $products updated since the last run: $last -> $version" -ForegroundColor Green
+    } else {
+        Write-Host "  [Office] $products version $version" -ForegroundColor Green
+    }
+    if ($version) { Set-Content -LiteralPath $versionFile -Value $version -Encoding ASCII }
+
+    # Update channel: a policy's choice wins over Office's own setting
+    $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Office\16.0\Common\OfficeUpdate'
+    $policy = Get-ItemProperty -Path $policyPath -ErrorAction SilentlyContinue
+    $channels = @{
+        '492350f6-3a01-4f97-b9c0-c7c6ddf67d60' = 'Current Channel'
+        '64256afe-f5d9-4f86-8936-8840a6a4f5be' = 'Current Channel (Preview)'
+        '5440fd1f-7ecb-4221-8110-145efaa6372f' = 'Beta Channel'
+        '55336b82-a18d-4dd6-b5f6-9e5095c314a6' = 'Monthly Enterprise Channel'
+        '7ffbc6bf-bc32-4f92-8982-f9dd17fd3114' = 'Semi-Annual Enterprise Channel'
+        'b8f9b850-328d-4355-9145-c59439a0c4cf' = 'Semi-Annual Enterprise Channel (Preview)'
+        'f2e724c1-748f-4b47-8fb8-8e0d210e9208' = 'Office 2019 (volume licence)'
+        '5030841d-c919-4594-8d2d-84ae4f96e58e' = 'Office 2021 (volume licence)'
+        '7983bac0-e531-40cf-be00-fd24fe66619c' = 'Office 2024 (volume licence)'
+    }
+    $channelUrl = & $get $cfg 'UpdateChannel'
+    if (-not $channelUrl) { $channelUrl = & $get $cfg 'CDNBaseUrl' }
+    $channel = '(unknown)'
+    if ($channelUrl -match '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}') {
+        $channel = if ($channels.ContainsKey($Matches[0])) { $channels[$Matches[0]] } else { $Matches[0] }
+    }
+    $branch = & $get $policy 'updatebranch'
+    if ($branch) { $channel = "$branch (set by policy)" }
+    Write-Host "  [Office] Update channel: $channel" -ForegroundColor Green
+
+    # Off, blocked or redirected
+    if ((& $get $cfg 'UpdatesEnabled') -eq 'False' -or (& $get $policy 'enableautomaticupdates') -eq '0') {
+        Write-Fail '[Office] Automatic updates are off (File > Account > Update Options in any Office app, or the cis-office step)'
+    }
+    # Office normally gets updates from officecdn.microsoft.com. A business can
+    # point it at a file share; on a stand-alone PC anything else is suspect.
+    foreach ($source in @(
+        @{ Where = "$cfgPath UpdateUrl"; Url = (& $get $cfg 'UpdateUrl') }
+        @{ Where = "$policyPath updatepath"; Url = (& $get $policy 'updatepath') }
+    )) {
+        if ($source.Url -and $source.Url -notmatch '^https?://officecdn\.microsoft\.com/') {
+            Write-Fail "[Office] Updates come from $($source.Url) instead of Microsoft ($($source.Where))"
+        }
+    }
+    $svc = Get-Service -Name 'ClickToRunSvc' -ErrorAction SilentlyContinue
+    if ($svc -and "$($svc.StartType)" -eq 'Disabled') {
+        Write-Fail '[Office] The Microsoft Office Click-to-Run service is disabled, so Office can''t update. Unless you did that: Set-Service ClickToRunSvc -StartupType Automatic'
+    }
+    $task = Get-ScheduledTask -TaskPath '\Microsoft\Office\' -TaskName 'Office Automatic Updates 2.0' -ErrorAction SilentlyContinue
+    if (-not $task) {
+        Write-Fail '[Office] The "Office Automatic Updates 2.0" scheduled task is missing; repair Office (Settings > Apps > Installed apps > Microsoft 365 > Modify > Quick Repair)'
+    } elseif ("$($task.State)" -eq 'Disabled') {
+        Write-Fail '[Office] The "Office Automatic Updates 2.0" scheduled task is disabled. Unless you did that: Enable-ScheduledTask -TaskPath ''\Microsoft\Office\'' -TaskName ''Office Automatic Updates 2.0'''
+    }
+
+    # Check for updates now
+    $clientDir = & $get $cfg 'ClientFolder'
+    if (-not $clientDir) {
+        # The 64-bit Common Files, even from 32-bit PowerShell
+        $common = if ($env:CommonProgramW6432) { $env:CommonProgramW6432 } else { $env:CommonProgramFiles }
+        $clientDir = Join-Path $common 'microsoft shared\ClickToRun'
+    }
+    $client = Join-Path $clientDir 'OfficeC2RClient.exe'
+    if (-not (Test-Path -LiteralPath $client)) {
+        Write-Fail "[Office] Office's updater isn't at $client; repair Office"
+        return
+    }
+    $sig = Get-AuthenticodeSignature -LiteralPath $client
+    $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { 'no signer' }
+    if ($sig.Status -ne 'Valid' -or $signer -notmatch 'O=Microsoft Corporation') {
+        Write-Fail "[Office] $client isn't validly signed by Microsoft ($($sig.Status), $signer); not run"
+        return
+    }
+    $open = @(Get-Process -Name 'WINWORD', 'EXCEL', 'POWERPNT', 'OUTLOOK', 'ONENOTE', 'MSACCESS', 'MSPUB', 'VISIO', 'WINPROJ' -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.ProcessName } | Sort-Object -Unique)
+    # displaylevel=false: no windows; forceappshutdown=false: never close open apps
+    $p = Start-Process -FilePath $client -ArgumentList '/update', 'user', 'displaylevel=false', 'forceappshutdown=false' -PassThru -WindowStyle Hidden
+    if (-not $p.WaitForExit(120000)) {
+        Write-Host '  [Office] Update check started; still running in the background' -ForegroundColor Green
+    } elseif ($p.ExitCode -ne 0) {
+        Write-Fail "[Office] Office's updater exited with code $($p.ExitCode)"
+        return
+    } else {
+        Write-Host '  [Office] Update check started; any update downloads and installs in the background' -ForegroundColor Green
+    }
+    if ($open) {
+        Write-Host "  [Office] Open now: $($open -join ', '). An update finishes once they're closed" -ForegroundColor Yellow
     }
 }
 
@@ -2863,7 +3306,8 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 Get-ChildItem -LiteralPath $LogDir -Filter 'dailyrunme-*.log' |
     Where-Object LastWriteTime -lt (Get-Date).AddDays(-30) |
     Remove-Item -Force
-$transcript = Join-Path $LogDir "dailyrunme-$(Get-Date -Format yyyyMMdd-HHmmss).log"
+$runStamp = Get-Date -Format yyyyMMdd-HHmmss
+$transcript = Join-Path $LogDir "dailyrunme-$runStamp.log"
 Start-Transcript -LiteralPath $transcript | Out-Null
 
 # Read programs' output as UTF-8, and have programs that follow the console's code
@@ -2897,6 +3341,8 @@ try {
     Invoke-Step 'defendersettings' { Set-DefenderSetting }
 
     # Updates, the background scan, then the checks
+    Invoke-Step 'patchwindows' { Update-Windows }
+    Invoke-Step 'patchoffice' { Update-Office }
     Invoke-Step 'patchchoco' { Update-ChocolateyPackage }
     Invoke-Step 'patchmsstore' { Update-StoreApp }
     Invoke-Step 'patchwinget' { Update-WingetPackage }
@@ -2912,6 +3358,16 @@ try {
     # Last, so it includes anything the steps above set off
     Invoke-Step 'protectionhistory' { Save-ProtectionHistory }
 
+    # Kept, unlike the transcripts: the first run's file is the only record of
+    # how the PC was before
+    $script:Step = 'registryundo'
+    $undoFile = $null
+    try {
+        $undoFile = Save-RegistryUndo -File (Join-Path $LogDir "registry-undo-$runStamp.reg")
+    } catch {
+        Write-Fail "Couldn't write the registry undo file: $($_.Exception.Message)"
+    }
+
     Write-Banner 'dailyrunme summary' '#' Cyan
     foreach ($n in $script:Notes) { Write-Host "NOTE: $n" -ForegroundColor Yellow }
     foreach ($f in $script:Failures) { Write-Host "FAIL: $f" -ForegroundColor Red }
@@ -2920,6 +3376,11 @@ try {
     Write-Host 'restart Windows to finish service, DEP and PowerShell 2.0 changes.'
     if ($script:HistoryFile) { Write-Host "Protection history: $script:HistoryFile" }
     if ($script:EekLog) { Write-Host "Emsisoft found malware; its log: $script:EekLog" -ForegroundColor Red }
+    if ($undoFile) {
+        Write-Host "Registry values changed: $($script:RegistryUndo.Count); to put them back: $undoFile"
+    } else {
+        Write-Host 'Registry values changed: none'
+    }
     Write-Host "Log: $transcript"
 } finally {
     if ($consoleEncoding) {
