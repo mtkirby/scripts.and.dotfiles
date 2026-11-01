@@ -16,13 +16,21 @@
        - cis-services:    unneeded services disabled
        - cis-registry:    automatic logon and WDigest off
        - dns:             Quad9 / OpenDNS with DNS over HTTPS preferred
+       - hostsfile:       hosts file put back to the default plus approved
+                          entries, with its location and permissions checked
        - scriptprotect:   Defender ASR rules, no Win+R, PowerShell logging,
                           PowerShell 2.0 removed, Windows Script Host off
        - cis-office:      Microsoft Office (CIS Microsoft Office Enterprise
                           Benchmark v1.2.0, Level 1) for every user account
        - lnkprotect:      shortcut extensions shown, mshta/regsvr32/certutil
                           firewalled, .hta opens in Notepad
+       - explorerview:    File Explorer shows extensions, hidden and system
+                          files, and the full path in the title bar
        - dep:             Data Execution Prevention for all programs
+       - coreisolation:   memory integrity, kernel stack protection, LSA
+                          protection and the vulnerable driver blocklist on,
+                          and checked that they're running
+       - devmode:         alert if Developer Mode is on, and turn it off
        - defendersettings: real-time, cloud, sample submission, Dev Drive,
                           Controlled folder access; checks Tamper protection
     3. Updates:
@@ -30,7 +38,11 @@
        - patchmsstore:    winget upgrades from the Microsoft Store, then a Store
                           update scan
        - patchwinget:     winget upgrade --all
-    4. mywinvscan:        start a full Defender scan, limited to 50% CPU, in the
+    4. msert:             Microsoft Safety Scanner, downloaded fresh, detect only:
+                          a full scan on Sundays, a quick scan otherwise
+       eekscan:           if C:\EEK exists, Emsisoft Emergency Kit, updated,
+                          detect only: a full scan on Saturdays, quick otherwise
+       mywinvscan:        start a full Defender scan, limited to 50% CPU, in the
                           background
     5. Checks:
        - winhealthcheck:  DISM ScanHealth, sfc /scannow, DISM AnalyzeComponentStore
@@ -90,6 +102,8 @@ $script:Failures = [System.Collections.Generic.List[string]]::new()
 $script:Notes = [System.Collections.Generic.List[string]]::new()
 # Set by the protectionhistory step, opened in Notepad at the very end
 $script:HistoryFile = $null
+# Set by the eekscan step when Emsisoft finds something; also opened at the end
+$script:EekLog = $null
 
 # ---------------------------------------------------------------
 # Approved Chrome extensions: EDIT THIS LIST
@@ -152,6 +166,17 @@ $DnsServers = @(
     @{ Address = '208.67.222.222';  Template = 'https://doh.opendns.com/dns-query' }  # OpenDNS (secondary)
     @{ Address = '2620:fe::fe';     Template = 'https://dns.quad9.net/dns-query' }    # Quad9 IPv6
     @{ Address = '2620:119:35::35'; Template = 'https://doh.opendns.com/dns-query' }  # OpenDNS IPv6
+)
+
+# ---------------------------------------------------------------
+# Hosts file entries to keep (see Section 5b). Every run, the hosts file is
+# put back to Windows' default plus these entries; anything else is removed
+# and reported. One entry per line: the IP address, then one or more names.
+# Some programs add their own (Docker Desktop adds host.docker.internal and
+# kubernetes.docker.internal); list them here to keep them.
+# ---------------------------------------------------------------
+$ApprovedHostsEntries = @(
+    # '192.168.1.10    nas.lan'  # example
 )
 
 # ---------------------------------------------------------------
@@ -1012,6 +1037,135 @@ function Set-SecureDns {
 }
 
 # ---------------------------------------------------------------
+# SECTION 5b: Hosts file restored to the default (not CIS)
+# Windows looks names up in the hosts file before asking DNS, so a line in it
+# overrides DNS over HTTPS and everything in Section 5. Malware adds lines
+# that send a bank, email or update site to its own server, or point
+# security sites at nothing so updates fail.
+# Each run compares the file's entries (comments and spacing aside) with
+# Windows' default plus $ApprovedHostsEntries at the top. If they differ, the
+# file is backed up to the log folder, rewritten, and the change reported
+# as a failure with the lines removed, so it shows in the summary.
+# Also put back if changed:
+#   - DataBasePath: the registry setting for the folder Windows reads the
+#     hosts file from. Malware can point it at a folder of its own, which
+#     leaves the real hosts file looking untouched.
+#   - Permissions: only administrators and SYSTEM should be able to change
+#     the file. If anyone else can, they're reset to the folder's defaults.
+# ---------------------------------------------------------------
+function Repair-HostsFile {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking the Hosts File' '.'
+
+    # Where Windows reads hosts from
+    $tcpip = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $defaultDir = '%SystemRoot%\System32\drivers\etc'
+    $tcpipValues = Get-ItemProperty -Path $tcpip -ErrorAction SilentlyContinue
+    $dbPath = if ($tcpipValues -and $tcpipValues.PSObject.Properties['DataBasePath']) { $tcpipValues.DataBasePath } else { $null }
+    # Compare expanded, since the value is usually stored unexpanded
+    if ($dbPath -and [Environment]::ExpandEnvironmentVariables($dbPath) -ne [Environment]::ExpandEnvironmentVariables($defaultDir)) {
+        Set-ItemProperty -Path $tcpip -Name 'DataBasePath' -Value $defaultDir -Type ExpandString -Force
+        Write-Fail "[Hosts] Windows was reading the hosts file from $dbPath; set back to $defaultDir"
+    }
+    $hosts = Join-Path ([Environment]::ExpandEnvironmentVariables($defaultDir)) 'hosts'
+
+    # Windows' default file: all comments, so every name goes to DNS
+    $default = @(
+        '# Copyright (c) 1993-2009 Microsoft Corp.'
+        '#'
+        '# This is a sample HOSTS file used by Microsoft TCP/IP for Windows.'
+        '#'
+        '# This file contains the mappings of IP addresses to host names. Each'
+        '# entry should be kept on an individual line. The IP address should'
+        '# be placed in the first column followed by the corresponding host name.'
+        '# The IP address and the host name should be separated by at least one'
+        '# space.'
+        '#'
+        '# Additionally, comments (such as these) may be inserted on individual'
+        "# lines or following the machine name denoted by a '#' symbol."
+        '#'
+        '# For example:'
+        '#'
+        '#      102.54.94.97     rhino.acme.com          # source server'
+        '#       38.25.63.10     x.acme.com              # x client host'
+        ''
+        '# localhost name resolution is handled within DNS itself.'
+        "#`t127.0.0.1       localhost"
+        "#`t::1             localhost"
+    )
+
+    # An entry as "ip name name...": comments dropped, spacing and case evened out
+    function ConvertTo-HostsEntry([string]$line) {
+        $words = @(($line -replace '#.*$', '').Trim() -split '\s+' | Where-Object { $_ })
+        if ($words.Count -lt 2) { return }
+        (@($words[0]) + @($words[1..($words.Count - 1)] | ForEach-Object { $_.ToLowerInvariant() })) -join ' '
+    }
+    $approved = @($ApprovedHostsEntries | ForEach-Object { ConvertTo-HostsEntry $_ } | Where-Object { $_ })
+    foreach ($line in $ApprovedHostsEntries) {
+        if (-not (ConvertTo-HostsEntry $line)) {
+            Write-Fail "[Hosts] '$line' in `$ApprovedHostsEntries isn't an IP address followed by a name; left out"
+        }
+    }
+
+    $current = @()
+    $exists = Test-Path -LiteralPath $hosts
+    if ($exists) {
+        $current = @(Get-Content -LiteralPath $hosts | ForEach-Object { ConvertTo-HostsEntry $_ } | Where-Object { $_ })
+    }
+    $extra = @($current | Where-Object { $approved -notcontains $_ })
+    $missing = @($approved | Where-Object { $current -notcontains $_ })
+
+    if ($exists -and $extra.Count -eq 0 -and $missing.Count -eq 0) {
+        Write-Host "  [Hosts] Unchanged (approved entries: $($current.Count), nothing else)" -ForegroundColor Green
+    } else {
+        if ($exists) {
+            $backup = Join-Path $LogDir "hosts-$(Get-Date -Format yyyyMMdd-HHmmss-fff).txt"
+            Copy-Item -LiteralPath $hosts -Destination $backup -Force
+        }
+        $content = $default
+        if ($approved) { $content += @('', '# Approved entries (dailyrunme.ps1 $ApprovedHostsEntries)') + $approved }
+        # A read-only hosts file has to be made writable, then put back as it was
+        $readOnly = $exists -and (Get-Item -LiteralPath $hosts).IsReadOnly
+        if ($readOnly) { Set-ItemProperty -LiteralPath $hosts -Name IsReadOnly -Value $false }
+        Set-Content -LiteralPath $hosts -Value $content -Encoding ASCII -Force
+        if ($readOnly) { Set-ItemProperty -LiteralPath $hosts -Name IsReadOnly -Value $true }
+        Clear-DnsClientCache -ErrorAction SilentlyContinue
+
+        if (-not $exists) {
+            Write-Fail "[Hosts] The hosts file was missing; recreated it"
+        } elseif ($extra) {
+            Write-Fail "[Hosts] Removed $($extra.Count) unapproved entries (backup: $backup): $($extra -join '; ')"
+        } else {
+            Write-Host "  [Hosts] Added $($missing.Count) approved entries (backup: $backup)" -ForegroundColor Green
+        }
+    }
+
+    # Permissions: anyone other than administrators, SYSTEM and TrustedInstaller
+    # able to write it means they've been loosened. Only the rights that allow a
+    # change count (Modify and FullControl also contain the read rights every
+    # user has): write and append data, write attributes, delete, change
+    # permissions, take ownership, and the generic write and all rights.
+    $writeRights = 0x2 -bor 0x4 -bor 0x10 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+    $trusted = 'S-1-5-32-544', 'S-1-5-18', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    $loose = @((Get-Acl -LiteralPath $hosts).Access | Where-Object {
+        $_.AccessControlType -eq 'Allow' -and ([int]$_.FileSystemRights -band $writeRights) -and
+        $(try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { '' }) -notin $trusted
+    })
+    if ($loose) {
+        icacls.exe $hosts /reset | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "[Hosts] $(($loose.IdentityReference) -join ', ') can change the hosts file, and resetting its permissions failed (icacls exit $LASTEXITCODE)"
+        } else {
+            Write-Fail "[Hosts] $(($loose.IdentityReference) -join ', ') could change the hosts file; permissions reset to the folder's defaults"
+        }
+    } else {
+        Write-Host "  [Hosts] Permissions: only administrators and SYSTEM can change it" -ForegroundColor Green
+    }
+}
+
+# ---------------------------------------------------------------
 # SECTION 6: PowerShell and script protections
 # Aimed at "ClickFix" tricks: a fake CAPTCHA or error page copies a command
 # to the clipboard and tells the user to press Win+R (or open Terminal),
@@ -1587,6 +1741,56 @@ function Set-ShortcutProtection {
 }
 
 # ---------------------------------------------------------------
+# SECTION 8b: File Explorer view settings (not CIS)
+# File Explorer > View > Show, and Folder Options > View, for every user
+# account and the Default profile new accounts are copied from:
+#   Show file extensions (HideFileExt = 0), so "Invoice.pdf.exe" can't pass as
+#     a PDF. Section 8 sets this too.
+#   Show hidden files (Hidden = 1; 2 hides them), so malware that marks its
+#     files hidden can't hide from you in Explorer.
+#   Show protected operating system files (ShowSuperHidden = 1), files marked
+#     both hidden and system. Malware uses that combination too. Windows' own
+#     files show as well, faded, e.g. a desktop.ini on the Desktop and in
+#     many folders; leave them alone.
+#   Full path in the title bar (CabinetState\FullPath = 1). On Windows 11
+#     the path shows in the tab's name.
+# Takes effect when Explorer next starts: sign out and in, or restart
+# "Windows Explorer" in Task Manager.
+# ---------------------------------------------------------------
+function Set-ExplorerView {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Setting File Explorer View Options' '.'
+
+    # Hashtables, not nested arrays, which @( ) would flatten into one list
+    $settings = @(
+        @{ Key = 'Advanced'; Name = 'HideFileExt'; Value = 0; What = 'file extensions shown' }
+        @{ Key = 'Advanced'; Name = 'Hidden'; Value = 1; What = 'hidden files shown' }
+        @{ Key = 'Advanced'; Name = 'ShowSuperHidden'; Value = 1; What = 'protected operating system files shown' }
+        @{ Key = 'CabinetState'; Name = 'FullPath'; Value = 1; What = 'full path in the title bar' }
+    )
+    Invoke-InEachUserHive {
+        param($root, $label)
+        $errors = @()
+        foreach ($s in $settings) {
+            $key = "$root\Software\Microsoft\Windows\CurrentVersion\Explorer\$($s.Key)"
+            try {
+                if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+                Set-ItemProperty -Path $key -Name $s.Name -Value $s.Value -Type DWord -Force
+            } catch {
+                $errors += "$($s.What): $($_.Exception.Message)"
+            }
+        }
+        if ($errors) {
+            Write-Fail "[Explorer] ${label}: $($errors -join '; ')"
+        } else {
+            Write-Host "  [Explorer] $label`: $(($settings | ForEach-Object { $_.What }) -join ', ')" -ForegroundColor Green
+        }
+    }
+}
+
+# ---------------------------------------------------------------
 # SECTION 9: Data Execution Prevention (DEP) for all programs (not CIS;
 # DISA's Windows STIG asks for at least OptOut)
 # DEP stops code running from memory that's meant to hold only data, which
@@ -1646,6 +1850,154 @@ function Enable-Dep {
                 }
             }
         }
+    }
+}
+
+# ---------------------------------------------------------------
+# SECTION 9b: Core isolation (not CIS)
+# Windows Security > Device security > Core isolation:
+#   Memory integrity (HVCI): Windows checks kernel code in a separate,
+#     hypervisor-protected space, so malware that reaches the kernel can't
+#     load unsigned code or change protected memory. Needs virtualization
+#     turned on in the PC's firmware (Intel VT-x / AMD SVM).
+#   Kernel-mode Hardware-enforced Stack Protection: the CPU keeps a shadow
+#     copy of each kernel return address, which stops exploits that rewrite
+#     them. Needs memory integrity, and an Intel 11th gen or AMD Zen 3 or
+#     newer CPU; on older CPUs it's set but never runs, which is only noted.
+#   Local Security Authority protection: lsass.exe, which holds signed-in
+#     users' credentials, runs as a protected process that tools like
+#     Mimikatz can't read. Set to 2 (on, without a UEFI lock) so it can still
+#     be turned off in Windows Security; a 1 (UEFI-locked) is left alone.
+#   Microsoft Vulnerable Driver Blocklist: stops known-vulnerable drivers
+#     loading, which malware brings along to get into the kernel ("bring your
+#     own vulnerable driver"). winmodcheck checks loaded drivers against the
+#     larger loldrivers.io list.
+# All but the blocklist start after a restart; a setting changed here adds a
+# restart note to the summary. Otherwise Windows is asked whether each is
+# actually running, and one that isn't is a failure (stack protection, only
+# a note).
+# Watch for after the first restart:
+#   - Windows Security won't turn memory integrity on while an incompatible
+#     driver is installed, but this sets it directly. That driver then won't
+#     load, so its device (often an old printer, audio, VPN or anti-cheat
+#     driver) may stop working. Windows Security > Device security > Core
+#     isolation details lists them; update or remove the driver, or turn
+#     memory integrity off there.
+#   - LSA protection blocks unsigned add-ins to Windows sign-in, such as some
+#     smart card or older VPN tools.
+# ---------------------------------------------------------------
+function Set-CoreIsolation {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Turning On Core Isolation' '.'
+
+    $dg = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+    $lsa = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    # Ok: values that count as on. Feature: the name for the restart note.
+    $settings = @(
+        @{ Feature = 'Memory integrity'; Path = "$dg\Scenarios\HypervisorEnforcedCodeIntegrity"; Name = 'Enabled'; Value = 1; Ok = @(1) }
+        @{ Feature = 'Memory integrity'; Path = $dg; Name = 'EnableVirtualizationBasedSecurity'; Value = 1; Ok = @(1) }
+        @{ Feature = 'Kernel-mode Hardware-enforced Stack Protection'; Path = "$dg\Scenarios\KernelShadowStacks"; Name = 'Enabled'; Value = 1; Ok = @(1) }
+        @{ Feature = 'Local Security Authority protection'; Path = $lsa; Name = 'RunAsPPL'; Value = 2; Ok = @(1, 2) }
+        @{ Feature = 'Local Security Authority protection'; Path = $lsa; Name = 'RunAsPPLBoot'; Value = 2; Ok = @(1, 2) }
+        @{ Feature = 'Microsoft Vulnerable Driver Blocklist'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config'; Name = 'VulnerableDriverBlocklistEnable'; Value = 1; Ok = @(1) }
+    )
+    $changed = [System.Collections.Generic.List[string]]::new()
+    foreach ($s in $settings) {
+        $item = Get-ItemProperty -Path $s.Path -ErrorAction SilentlyContinue
+        $now = if ($item -and $item.PSObject.Properties[$s.Name]) { $item.($s.Name) } else { $null }
+        if ($null -ne $now -and $s.Ok -contains [int]$now) {
+            Write-Host "  [Core isolation] $($s.Name) = $now  # $($s.Feature): already on" -ForegroundColor Green
+            continue
+        }
+        Set-RegistryValue -Path $s.Path -Name $s.Name -Value $s.Value -Description "$($s.Feature): turned on (was $(if ($null -eq $now) { 'not set' } else { $now }))"
+        if (-not $changed.Contains($s.Feature)) { $changed.Add($s.Feature) }
+    }
+    if ($changed.Count) {
+        $restart = @($changed | Where-Object { $_ -ne 'Microsoft Vulnerable Driver Blocklist' })
+        if ($restart) { $script:Notes.Add("Restart Windows to turn on $($restart -join ', ')") }
+    }
+
+    # What's running now. Win32_DeviceGuard lists running services by number:
+    # 2 = memory integrity, 5 = kernel-mode hardware-enforced stack protection.
+    # VirtualizationBasedSecurityStatus: 0 = off, 1 = on but not running, 2 = running.
+    $dgInfo = $null
+    try {
+        $dgInfo = Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' -ClassName 'Win32_DeviceGuard' -ErrorAction Stop
+    } catch {
+        Write-Fail "[Core isolation] Couldn't ask Windows what's running: $($_.Exception.Message)"
+        return
+    }
+    $running = @($dgInfo.SecurityServicesRunning | ForEach-Object { [int]$_ })
+    $vbs = [int]$dgInfo.VirtualizationBasedSecurityStatus
+
+    if ($running -contains 2) {
+        Write-Host "  [Core isolation] Memory integrity: running" -ForegroundColor Green
+    } elseif (-not $changed.Contains('Memory integrity')) {
+        $why = if ($vbs -eq 0) {
+            'virtualization-based security is off; turn on virtualization (Intel VT-x / AMD SVM) in the PC''s firmware settings'
+        } else {
+            'an incompatible driver may be stopping it; see Windows Security > Device security > Core isolation details'
+        }
+        Write-Fail "[Core isolation] Memory integrity is set but not running after a restart: $why"
+    }
+
+    if ($running -contains 5) {
+        Write-Host "  [Core isolation] Kernel-mode Hardware-enforced Stack Protection: running" -ForegroundColor Green
+    } elseif (-not $changed.Contains('Kernel-mode Hardware-enforced Stack Protection')) {
+        $msg = 'Kernel-mode Hardware-enforced Stack Protection is set but not running; it needs memory integrity running and an Intel 11th gen or AMD Zen 3 or newer CPU'
+        Write-Host "  [Core isolation] $msg" -ForegroundColor Yellow
+        $script:Notes.Add($msg)
+    }
+
+    # LSA protection: Wininit logs event 12, "LSASS.exe was started as a
+    # protected process", at each startup where it's on
+    if (-not $changed.Contains('Local Security Authority protection')) {
+        $boot = (Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime
+        $ppl = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Wininit'; Id = 12; StartTime = $boot } `
+            -MaxEvents 1 -ErrorAction SilentlyContinue
+        if ($ppl) {
+            Write-Host "  [Core isolation] Local Security Authority protection: running" -ForegroundColor Green
+        } else {
+            Write-Fail "[Core isolation] Local Security Authority protection is set but LSASS didn't start protected at the last restart (no Wininit event 12 since $boot)"
+        }
+    }
+}
+
+# ---------------------------------------------------------------
+# SECTION 9c: Developer Mode off (not CIS)
+# Settings > System > For developers > Developer Mode. While it's on, apps can
+# be installed from loose, unsigned files (not just signed packages), any user
+# can create symbolic links without admin rights, and the Device Portal and
+# Device discovery options can expose services to the network. Malware and
+# attackers use the first two. If it's on, this reports a failure (in case
+# something other than you turned it on) and turns it off.
+# To use it for a while, turn it on in Settings; the next run turns it off.
+# Tools that make symlinks as a normal user (git with core.symlinks, npm,
+# Cygwin with winsymlinks:native) fall back to copies or fail while it's off.
+# ---------------------------------------------------------------
+function Disable-DeveloperMode {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking Developer Mode' '.'
+
+    $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+    $name = 'AllowDevelopmentWithoutDevLicense'
+    $read = {
+        $item = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+        if ($item -and $item.PSObject.Properties[$name]) { [int]$item.$name } else { 0 }
+    }
+    if ((& $read) -eq 0) {
+        Write-Host '  [Developer Mode] Off' -ForegroundColor Green
+        return
+    }
+    Set-ItemProperty -Path $key -Name $name -Value 0 -Type DWord -Force
+    if ((& $read) -eq 0) {
+        Write-Fail '[Developer Mode] Was on; turned it off. If you (or a developer tool you installed) didn''t turn it on, find out what did'
+    } else {
+        Write-Fail '[Developer Mode] Is on, and turning it off didn''t stick (a policy may be holding it on)'
     }
 }
 
@@ -1942,6 +2294,147 @@ function Update-WingetPackage {
     Write-Banner 'winget upgrade --all' '.'
     Invoke-Native winget 'upgrade', '--all', '--include-unknown', '--accept-source-agreements',
         '--accept-package-agreements', '--disable-interactivity' -Skip $WingetProgress
+}
+
+# msert: Microsoft Safety Scanner, a second opinion that doesn't depend on Defender's
+# installation. It uses the same engine and signatures, packaged separately, so it
+# still works if malware has disabled or damaged Defender. It expires 10 days after
+# download, so a fresh copy is downloaded every run (a few hundred MB), its
+# Microsoft signature checked before it runs, and deleted afterwards. Detect only
+# (/N): it reports, and Defender or you remove. A full scan on Sundays (can take
+# hours), otherwise a quick scan (minutes). msert.exe scans in its own process, so
+# unlike Defender it can run at below-normal priority. Runs before mywinvscan so
+# the two scans don't compete. Results come from this run's part of
+# %SystemRoot%\debug\msert.log, which Safety Scanner adds to each run.
+function Start-SafetyScan {
+    $full = (Get-Date).DayOfWeek -eq 'Sunday'
+    $url = if ([Environment]::Is64BitOperatingSystem) { 'https://go.microsoft.com/fwlink/?LinkId=212732' } else { 'https://go.microsoft.com/fwlink/?LinkId=212733' }
+    $dir = Join-Path $env:TEMP "msert-$PID"
+    $exe = Join-Path $dir 'msert.exe'
+    $log = Join-Path $env:SystemRoot 'debug\msert.log'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        Write-Host 'Downloading Microsoft Safety Scanner'
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            # Windows PowerShell redraws its progress bar for every chunk, which slows downloads
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $exe -TimeoutSec 900 -ErrorAction Stop
+        } catch {
+            Write-Fail "Safety Scanner download: $($_.Exception.Message)"
+            return
+        }
+        $sig = Get-AuthenticodeSignature -LiteralPath $exe
+        $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { 'no signer' }
+        if ($sig.Status -ne 'Valid' -or $signer -notmatch 'O=Microsoft Corporation') {
+            Write-Fail "the Safety Scanner download isn't validly signed by Microsoft ($($sig.Status), $signer); not run"
+            return
+        }
+
+        # Safety Scanner adds to its log each run; this run's part is what's new
+        $before = [string](Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue)
+        $opts = @('/Q', '/N')
+        if ($full) { $opts += '/F' }
+        Write-Host "Running a $(if ($full) { 'full scan (Sunday; this can take hours)' } else { 'quick scan' }), detect only: msert.exe $($opts -join ' ')"
+        try {
+            $p = Start-Process -FilePath $exe -ArgumentList $opts -WindowStyle Hidden -PassThru -ErrorAction Stop
+        } catch {
+            Write-Fail "could not start the Safety Scanner: $($_.Exception.Message)"
+            return
+        }
+        try { $p.PriorityClass = 'BelowNormal' } catch { Write-Verbose 'priority unchanged' }
+        $p.WaitForExit()
+
+        $after = [string](Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue)
+        $run = if ($before -and $after.StartsWith($before)) { $after.Substring($before.Length) } else { $after }
+        $lines = @($run.Trim() -split "`r?`n")
+        $lines | ForEach-Object { "  $_" } | Out-Host
+        # Results Summary lists each threat as "Found <name>, not removed."; the
+        # scan results above it as "Threat Detected: <name>..."
+        $found = @($lines | Where-Object { $_ -match '^\s*Found\s' })
+        if (-not $found) { $found = @($lines | Where-Object { $_ -match '^\s*Threat Detected' }) }
+        if ($found) {
+            Write-Fail "Safety Scanner found $($found.Count) threat(s), not removed (detect only); run a Defender scan or remove them: $(($found | ForEach-Object { $_.Trim() }) -join '; ')"
+        } elseif ($run -match 'No infection found') {
+            Write-Host 'Safety Scanner: no infection found' -ForegroundColor Green
+        } else {
+            Write-Fail "Safety Scanner results unclear (exit code $($p.ExitCode)); see $log"
+        }
+    } finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# eekscan: Emsisoft Emergency Kit's command-line scanner, a2cmd.exe. A different
+# engine from Defender's (Bitdefender's plus Emsisoft's own), so unlike the Safety
+# Scanner it's an independent second opinion. Runs only if C:\EEK exists (the kit
+# is portable: extract it there). Updates its signatures, then scans detect only
+# (no /quarantine or /delete): /full on Saturdays (can take hours), /quick
+# otherwise. Output goes to eek-scan.log in $LogDir, which opens in Notepad at the
+# end of the run if anything is found.
+# This runs as administrator, but a folder made at the root of C: can be changed
+# by the user who made it, so a2cmd.exe must be validly signed by Emsisoft, checked
+# before the update and again after it.
+# a2cmd's exit codes and summary wording are checked conservatively: a detection
+# line, a non-zero "found" count or a non-zero exit code is a failure, and so is
+# output with no summary at all.
+function Start-EmsisoftScan {
+    $eek = Join-Path $env:SystemDrive 'EEK'
+    if (-not (Test-Path -LiteralPath $eek)) {
+        Write-Skip "$eek not found (Emsisoft Emergency Kit isn't installed)"
+        return
+    }
+    $a2cmd = @('bin64', 'bin32') | ForEach-Object { Join-Path $eek "$_\a2cmd.exe" } |
+        Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $a2cmd) {
+        Write-Fail "a2cmd.exe not found in $eek\bin64 or $eek\bin32"
+        return
+    }
+    $signedByEmsisoft = {
+        $s = Get-AuthenticodeSignature -LiteralPath $a2cmd
+        $s.Status -eq 'Valid' -and $s.SignerCertificate -and $s.SignerCertificate.Subject -match 'Emsisoft'
+    }
+    if (-not (& $signedByEmsisoft)) {
+        Write-Fail "$a2cmd isn't validly signed by Emsisoft; not run"
+        return
+    }
+
+    Write-Banner 'a2cmd /update' '.'
+    Invoke-Native $a2cmd '/update'
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARN: a2cmd /update exited $LASTEXITCODE; scanning with the signatures it has" -ForegroundColor Yellow
+    }
+    if (-not (& $signedByEmsisoft)) {
+        Write-Fail "$a2cmd isn't validly signed by Emsisoft after the update; not run"
+        return
+    }
+
+    $full = (Get-Date).DayOfWeek -eq 'Saturday'
+    $scan = if ($full) { '/full' } else { '/quick' }
+    $log = Join-Path $LogDir 'eek-scan.log'
+    Write-Banner "a2cmd $scan$(if ($full) { ' (Saturday; this can take hours)' })" '.'
+    # Shown as it runs, and kept for the result check and the log
+    $out = @(& $a2cmd $scan 2>&1 | ForEach-Object {
+        $line = "$_" -replace "`0", ''
+        $line | Out-Host
+        $line
+    })
+    $rc = $LASTEXITCODE
+    Set-Content -LiteralPath $log -Value $out -Encoding UTF8
+
+    $detected = @($out | Where-Object { $_ -match '(?i)\bdetected:' })
+    $summary = $out | Where-Object { $_ -match '(?i)^\s*found\s*:?\s*\d+\s*$' } | Select-Object -Last 1
+    $count = if ($summary -match '(\d+)\s*$') { [int]$Matches[1] } else { -1 }
+    if ($detected -or $count -gt 0 -or $rc -ne 0) {
+        $what = if ($detected) { ($detected | ForEach-Object { $_.Trim() }) -join '; ' } elseif ($count -gt 0) { "$count found" } else { 'no detections listed' }
+        Write-Fail "Emsisoft found malware or failed (exit code $rc; nothing removed, detect only; see $log): $what"
+        # Found something: open the log in Notepad at the end of the run
+        if ($detected -or $count -gt 0) { $script:EekLog = $log }
+    } elseif ($count -eq 0) {
+        Write-Host 'Emsisoft Emergency Kit: no malware found' -ForegroundColor Green
+    } else {
+        Write-Fail "Emsisoft results unclear: no summary in the output (exit code $rc); see $log"
+    }
 }
 
 # mywinvscan: starts a full Defender scan limited to 50% CPU and returns. The scan
@@ -2494,16 +2987,22 @@ try {
     Invoke-Step 'cis-services' { Disable-UnneededService }
     Invoke-Step 'cis-registry' { Set-SecurityRegistry }
     Invoke-Step 'dns' { Set-SecureDns }
+    Invoke-Step 'hostsfile' { Repair-HostsFile }
     Invoke-Step 'scriptprotect' { Set-ScriptProtection }
     Invoke-Step 'cis-office' { Set-OfficeHardening }
     Invoke-Step 'lnkprotect' { Set-ShortcutProtection }
+    Invoke-Step 'explorerview' { Set-ExplorerView }
     Invoke-Step 'dep' { Enable-Dep }
+    Invoke-Step 'coreisolation' { Set-CoreIsolation }
+    Invoke-Step 'devmode' { Disable-DeveloperMode }
     Invoke-Step 'defendersettings' { Set-DefenderSetting }
 
     # Updates, the background scan, then the checks
     Invoke-Step 'patchchoco' { Update-ChocolateyPackage }
     Invoke-Step 'patchmsstore' { Update-StoreApp }
     Invoke-Step 'patchwinget' { Update-WingetPackage }
+    Invoke-Step 'msert' { Start-SafetyScan }
+    Invoke-Step 'eekscan' { Start-EmsisoftScan }
     Invoke-Step 'mywinvscan' { Start-DefenderScan }
     Invoke-Step 'winhealthcheck' { Test-WindowsHealth }
     Invoke-Step 'windiskcheck' { Test-SystemDisk }
@@ -2521,6 +3020,7 @@ try {
     Write-Host 'Restart Chrome for its policies (or chrome://policy > Reload policies), and'
     Write-Host 'restart Windows to finish service, DEP and PowerShell 2.0 changes.'
     if ($script:HistoryFile) { Write-Host "Protection history: $script:HistoryFile" }
+    if ($script:EekLog) { Write-Host "Emsisoft found malware; its log: $script:EekLog" -ForegroundColor Red }
     Write-Host "Log: $transcript"
 } finally {
     if ($consoleEncoding) {
@@ -2532,6 +3032,9 @@ try {
 # Last of all, so the window opens once the script has nothing left to do
 if ($script:HistoryFile) {
     Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$script:HistoryFile`""
+}
+if ($script:EekLog) {
+    Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$script:EekLog`""
 }
 
 if ($script:Failures.Count -gt 0) { exit 1 }

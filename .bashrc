@@ -3160,6 +3160,8 @@ then
         patchmsstore 2>&1 |tee /tmp/patchmsstore.log
         patchwinget 2>&1 |tee /tmp/patchwinget.log
         patchmods 2>&1 |tee /tmp/patchmods.log
+        mywinmsert 2>&1 |tee /tmp/mywinmsert.log
+        mywineek 2>&1 |tee /tmp/mywineek.log
         mywinvscan 2>&1 |tee /tmp/mywinvscan.log
         mywinclam 2>&1 |tee /tmp/mywinclam.log
         windiskclean 2>&1 |tee /tmp/windiskclean.log
@@ -3366,6 +3368,181 @@ then
         else
             mkbanner "sdelete" '#' yellow
             sdelete -accepteula -z c:
+        fi
+    }
+
+    ##
+    # Microsoft Safety Scanner, a second opinion that doesn't depend on Defender's
+    # installation. It uses the same engine and signatures, packaged separately, so
+    # it still works if malware has disabled or damaged Defender. It expires 10 days
+    # after download, so a fresh copy is downloaded every run (a few hundred MB), its
+    # Microsoft signature checked before it runs, and deleted afterwards. Detect only
+    # (/N): it reports, and Defender or you remove. A full scan on Sundays (can take
+    # hours), otherwise a quick scan (minutes). msert.exe scans in its own process,
+    # so unlike Defender it can run at below-normal priority. mywinpatchall runs it
+    # before mywinvscan so the two scans don't compete. Results come from this run's
+    # part of %SystemRoot%\debug\msert.log, which Safety Scanner adds to each run.
+    function mywinmsert()
+    {
+        mkbanner "mywinmsert" '#' yellow
+        if ! id -G | grep -qw 544
+        then
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
+        fi
+        # shellcheck disable=SC2016
+        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+            $full = (Get-Date).DayOfWeek -eq "Sunday"
+            $url = if ([Environment]::Is64BitOperatingSystem) { "https://go.microsoft.com/fwlink/?LinkId=212732" } else { "https://go.microsoft.com/fwlink/?LinkId=212733" }
+            $dir = Join-Path $env:TEMP "msert-$PID"
+            $exe = Join-Path $dir "msert.exe"
+            $log = Join-Path $env:SystemRoot "debug\msert.log"
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            try {
+                "Downloading Microsoft Safety Scanner"
+                try {
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    # Windows PowerShell redraws its progress bar for every chunk, which slows downloads
+                    $ProgressPreference = "SilentlyContinue"
+                    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $exe -TimeoutSec 900 -ErrorAction Stop
+                } catch {
+                    "FAIL: Safety Scanner download: $($_.Exception.Message)"
+                    return
+                }
+                $sig = Get-AuthenticodeSignature -LiteralPath $exe
+                $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "no signer" }
+                if ($sig.Status -ne "Valid" -or $signer -notmatch "O=Microsoft Corporation") {
+                    "FAIL: the Safety Scanner download is not validly signed by Microsoft ($($sig.Status), $signer); not run"
+                    return
+                }
+
+                # Safety Scanner adds to its log each run; this run is what is new
+                $before = [string](Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue)
+                $opts = @("/Q", "/N")
+                if ($full) { $opts += "/F" }
+                "Running a $(if ($full) { "full scan (Sunday; this can take hours)" } else { "quick scan" }), detect only: msert.exe $($opts -join " ")"
+                try {
+                    $p = Start-Process -FilePath $exe -ArgumentList $opts -WindowStyle Hidden -PassThru -ErrorAction Stop
+                } catch {
+                    "FAIL: could not start the Safety Scanner: $($_.Exception.Message)"
+                    return
+                }
+                try { $p.PriorityClass = "BelowNormal" } catch { Write-Verbose "priority unchanged" }
+                $p.WaitForExit()
+
+                $after = [string](Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue)
+                $run = if ($before -and $after.StartsWith($before)) { $after.Substring($before.Length) } else { $after }
+                $lines = @($run.Trim() -split "`r?`n")
+                $lines | ForEach-Object { "  $_" }
+                # Results Summary lists each threat as "Found <name>, not removed.";
+                # the scan results above it as "Threat Detected: <name>..."
+                $found = @($lines | Where-Object { $_ -match "^\s*Found\s" })
+                if (-not $found) { $found = @($lines | Where-Object { $_ -match "^\s*Threat Detected" }) }
+                if ($found) {
+                    "FAIL: Safety Scanner found $($found.Count) threat(s), not removed (detect only); run a Defender scan or remove them: $(($found | ForEach-Object { $_.Trim() }) -join "; ")"
+                } elseif ($run -match "No infection found") {
+                    "Safety Scanner: no infection found"
+                } else {
+                    "FAIL: Safety Scanner results unclear (exit code $($p.ExitCode)); see $log"
+                }
+            } finally {
+                Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+            }' | tr -d '\r'
+    }
+
+    ##
+    # Emsisoft Emergency Kit's command-line scanner, a2cmd.exe. A different engine
+    # from Defender's (Bitdefender's plus Emsisoft's own), so unlike the Safety
+    # Scanner it's an independent second opinion. Runs only if C:\EEK exists (the
+    # kit is portable: extract it there). Updates its signatures, then scans detect
+    # only (no /quarantine or /delete): /full on Saturdays (can take hours), /quick
+    # otherwise. Output goes to /tmp/mywineek.scan.log, which opens in Notepad if
+    # anything is found.
+    # This runs as administrator, but a folder made at the root of C: can be
+    # changed by the user who made it, so a2cmd.exe must be validly signed by
+    # Emsisoft, checked before the update and again after it.
+    # a2cmd's exit codes and summary wording are checked conservatively: a
+    # detection line, a non-zero "found" count or a non-zero exit code is a
+    # failure, and so is output with no summary at all.
+    function mywineek()
+    {
+        mkbanner "mywineek" '#' yellow
+        local eek=/cygdrive/c/EEK a2cmd="" scan=/quick log=/tmp/mywineek.scan.log rc count detected
+        local ps=/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe sigcheck
+        if [[ ! -d "$eek" ]]
+        then
+            printf '%s\n' 'SKIPPING: C:\EEK not found (Emsisoft Emergency Kit is not installed)'
+            return 0
+        fi
+        if ! id -G | grep -qw 544
+        then
+            echo "FAIL: run Cygwin as Administrator"
+            return 1
+        fi
+        for a2cmd in "$eek"/bin64/a2cmd.exe "$eek"/bin32/a2cmd.exe
+        do
+            [[ -f "$a2cmd" ]] && break
+        done
+        if [[ ! -f "$a2cmd" ]]
+        then
+            printf '%s\n' 'FAIL: a2cmd.exe not found in C:\EEK\bin64 or C:\EEK\bin32'
+            return 1
+        fi
+        # Exit 0 only if a2cmd.exe is validly signed by Emsisoft
+        sigcheck="\$s = Get-AuthenticodeSignature -LiteralPath '$(cygpath -w "$a2cmd")'; if (\$s.Status -eq 'Valid' -and \$s.SignerCertificate -and \$s.SignerCertificate.Subject -match 'Emsisoft') { exit 0 } else { exit 1 }"
+        if ! "$ps" -NoProfile -Command "$sigcheck"
+        then
+            echo "FAIL: $(cygpath -w "$a2cmd") isn't validly signed by Emsisoft; not run"
+            return 1
+        fi
+
+        mkbanner "a2cmd /update" '.' yellow
+        "$a2cmd" /update 2>&1 | tr -d '\r'
+        rc=${PIPESTATUS[0]}
+        (( rc == 0 )) || echo "WARN: a2cmd /update exited $rc; scanning with the signatures it has"
+        if ! "$ps" -NoProfile -Command "$sigcheck"
+        then
+            echo "FAIL: $(cygpath -w "$a2cmd") isn't validly signed by Emsisoft after the update; not run"
+            return 1
+        fi
+
+        # date +%u: 1 is Monday, 6 Saturday
+        if [[ "$(date +%u)" == 6 ]]
+        then
+            scan=/full
+            mkbanner "a2cmd $scan (Saturday; this can take hours)" '.' yellow
+        else
+            mkbanner "a2cmd $scan" '.' yellow
+        fi
+        "$a2cmd" "$scan" 2>&1 | tr -d '\r' | tee "$log"
+        rc=${PIPESTATUS[0]}
+
+        detected="$(grep -iE '(^|[^[:alnum:]_])detected:' "$log")"
+        count="$(grep -iE '^[[:space:]]*found[[:space:]]*:?[[:space:]]*[0-9]+[[:space:]]*$' "$log" | tail -1 | grep -oE '[0-9]+')"
+        if [[ -n "$detected" ]] || (( ${count:-0} > 0 || rc != 0 ))
+        then
+            echo "FAIL: Emsisoft found malware or failed (exit code $rc; nothing removed, detect only; see $log):"
+            if [[ -n "$detected" ]]
+            then
+                echo "  ${detected//$'\n'/$'\n'  }"
+            elif (( ${count:-0} > 0 ))
+            then
+                echo "  $count found"
+            else
+                echo "  no detections listed"
+            fi
+            # Found something: open the log in Notepad (cygstart doesn't wait)
+            if [[ -n "$detected" ]] || (( ${count:-0} > 0 ))
+            then
+                cygstart notepad.exe "$(cygpath -w "$log")"
+            fi
+            return 1
+        elif [[ "$count" == 0 ]]
+        then
+            echo "Emsisoft Emergency Kit: no malware found"
+        else
+            echo "FAIL: Emsisoft results unclear: no summary in the output (exit code $rc); see $log"
+            return 1
         fi
     }
 
