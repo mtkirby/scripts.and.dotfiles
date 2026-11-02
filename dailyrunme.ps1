@@ -10,12 +10,25 @@
     Every step runs even if an earlier one fails; the summary at the end lists what failed.
 
     1. patchmssigs:       update Microsoft Defender signatures
-    2. Hardening, re-applied every run so nothing drifts:
+    2. restorepoint:      one System Restore point before the changes below.
+                          If Windows already made one in the last 24 hours, that
+                          is noted and the run continues. The script never
+                          restarts the PC. When a restart is actually needed, a
+                          window pops up at the end and says so.
+    3. Hardening, re-applied every run so nothing drifts:
        - cis-chrome:      Chrome policies (CIS Google Chrome Benchmark v3.0.0), the
                           extension allowlist, the JavaScript optimizer allowlist,
-                          and Chrome Remote Desktop blocked
+                          and Chrome Remote Desktop blocked. An installed extension
+                          that is not approved is a failure until its ID is added
+                          or the extension is removed.
        - cis-services:    unneeded services disabled
-       - cis-registry:    automatic logon and WDigest off
+       - quickassist:     Quick Assist removed (the app, the provisioned package
+                          and the Windows capability). A failure if it was
+                          installed, so a return is visible.
+       - smb1:            the SMB1Protocol Windows feature removed, without a
+                          restart
+       - cis-registry:    automatic logon and WDigest off. A saved automatic-logon
+                          password is deleted and is not copied into the undo file.
        - dns:             Quad9 / OpenDNS with DNS over HTTPS preferred
        - hostsfile:       hosts file put back to the default plus approved
                           entries, with its location and permissions checked
@@ -23,18 +36,24 @@
                           PowerShell 2.0 removed, Windows Script Host off
        - cis-office:      Microsoft Office (CIS Microsoft Office Enterprise
                           Benchmark v1.2.0, Level 1) for every user account
+       - firewall:        a Windows Firewall profile that is off is turned back
+                          on, and that is a failure so it stays visible
        - lnkprotect:      shortcut extensions shown, mshta/regsvr32/certutil
                           firewalled, .hta opens in Notepad
        - explorerview:    File Explorer shows extensions, hidden and system
                           files, and the full path in the title bar
+       - autoplay:        AutoPlay and AutoRun off for the PC and every user
        - dep:             Data Execution Prevention for all programs
        - coreisolation:   memory integrity, kernel stack protection, LSA
                           protection and the vulnerable driver blocklist on,
                           and checked that they're running
        - devmode:         alert if Developer Mode is on, and turn it off
-       - defendersettings: real-time, cloud, sample submission, Dev Drive,
+       - defendersettings: real-time, cloud, sample submission, potentially
+                          unwanted apps, network protection, Dev Drive,
                           Controlled folder access; checks Tamper protection
-    3. Updates:
+       - defenderexclusions: fails if Defender has an exclusion, or a Controlled
+                          folder access app, that is not on the approved lists
+    4. Updates:
        - patchwindows:    Windows Update, drivers and other Microsoft products
                           included; optional updates listed, not installed.
                           Turns on updates for other Microsoft products and
@@ -48,13 +67,19 @@
        - patchmsstore:    winget upgrades from the Microsoft Store, then a Store
                           update scan
        - patchwinget:     winget upgrade --all
-    4. msert:             Microsoft Safety Scanner, downloaded fresh, detect only:
+    5. msert:             Microsoft Safety Scanner, downloaded fresh, detect only:
                           a full scan on Sundays, a quick scan otherwise
        eekscan:           if C:\EEK exists, Emsisoft Emergency Kit, updated,
                           detect only: a full scan on Saturdays, quick otherwise
-       mywinvscan:        start a full Defender scan, limited to 50% CPU, in the
-                          background
-    5. Checks:
+    6. Checks. These report only; they do not turn remote access off, change
+       UAC, or turn encryption on:
+       - remoteaccess:    fails if Remote Desktop, Remote Assistance or WinRM
+                          is on
+       - uac:             fails if UAC is off, the secure desktop is off, or an
+                          admin can elevate without a prompt
+       - bitlocker:       fails if the system drive is not protected by device
+                          encryption or BitLocker
+       - diskhealth:      fails if a physical disk is Unhealthy or Warning
        - winhealthcheck:  DISM ScanHealth, sfc /scannow, DISM AnalyzeComponentStore
        - windiskcheck:    chkdsk /scan of the system drive
        - mywinprocsigs:   running programs without a valid Authenticode
@@ -66,8 +91,15 @@
        - winmodcheck:     loaded drivers without a valid signature or in the
                           loldrivers.io list, and settings that let unsigned or
                           blocklisted drivers load
-    6. protectionhistory: the last 7 days of Defender's Protection history,
+    7. mywinvscan:        start a full Defender scan, limited to 50% CPU, in the
+                          background. After the checks, so it is not reading the
+                          disk during DISM, sfc, or chkdsk
+    8. protectionhistory: the last 7 days of Defender's Protection history,
                           written to the Desktop and opened in Notepad at the end
+    9. statusfile:        dailyrunme status.txt on the Desktop, every run:
+                          All clear, or Needs attention with the failures, notes
+                          and restart reasons. Not opened. If Controlled folder
+                          access blocks the Desktop, it goes in the log folder.
 
     Any run that changes registry values (including service startup types)
     writes registry-undo-<date>-<time>.reg to the log folder, with those values
@@ -76,8 +108,8 @@
     The file's header lists what it can't undo.
 
     The settings to edit (approved Chrome extensions, JavaScript optimizer sites,
-    Office's old file formats, Controlled folder access apps, DNS servers) are at
-    the top of the script.
+    Office's old file formats, Controlled folder access apps, DNS servers, hosts
+    entries, and approved Defender exclusions) are at the top of the script.
 
 .PARAMETER LogDir
     Where the transcript, the Defender scan log and the registry undo files go.
@@ -88,8 +120,9 @@
       in a user session, and the report goes to your Desktop.
     - Windows blocks scripts by default, so start it with -ExecutionPolicy Bypass.
     - Exit code 1 if any step failed; the summary at the end lists them.
-    - Restart Chrome after the first run, and Windows after any run that changes
-      services, DEP or PowerShell 2.0.
+    - Restart Chrome after the first run (or reload policies at chrome://policy).
+      This script never restarts the PC. When a restart is actually needed, it
+      says so in a popup, in the summary, and in the Desktop status file.
     - Chrome policies need Chrome to read HKLM\SOFTWARE\Policies\Google\Chrome;
       check them at chrome://policy.
     - Hardening targets a stand-alone PC. On a domain, use Group Policy instead.
@@ -116,8 +149,13 @@ $ErrorActionPreference = 'Continue'
 $script:Step = ''
 $script:Failures = [System.Collections.Generic.List[string]]::new()
 $script:Notes = [System.Collections.Generic.List[string]]::new()
+# Real reasons a restart would finish something this run changed, or that
+# Windows is already waiting on. Empty on a clean run: no popup, no nag.
+$script:RestartReasons = [System.Collections.Generic.List[string]]::new()
 # Set by the protectionhistory step, opened in Notepad at the very end
 $script:HistoryFile = $null
+# Set by the statusfile step. Written every run; not opened.
+$script:StatusFile = $null
 # Set by the eekscan step when Emsisoft finds something; also opened at the end
 $script:EekLog = $null
 # Registry values this run changed, as they were before, for the undo file
@@ -154,7 +192,7 @@ $JsOptimizerAllowedSites = @(
     'https://[*.]live.com'           # Outlook.com mail, personal OneDrive
     'https://[*.]yahoo.com'          # Yahoo: mail, finance, news
     'https://[*.]wellsfargo.com'     # Wells Fargo online banking
-    'https://[*.]vanguard.com'     # Wells Fargo online banking
+    'https://[*.]vanguard.com'       # Vanguard investments
 )
 
 # ---------------------------------------------------------------
@@ -175,6 +213,7 @@ $OfficeBlockedFileBehavior = 1
 $ControlledFolderAllowedApps = @(
     'C:\cygwin\bin\bash.exe'
     'C:\cygwin\bin\git.exe'
+    'C:\Program Files\Zoom\bin\Zoom.exe'
 )
 
 # ---------------------------------------------------------------
@@ -202,6 +241,24 @@ $ApprovedHostsEntries = @(
 )
 
 # ---------------------------------------------------------------
+# Defender exclusions: EDIT THIS LIST
+# Anything Defender excludes that is not listed here is a failure, so an
+# exclusion added by malware or by an installer shows up in the summary.
+# An empty list means every exclusion is a failure. Paths are compared
+# without a trailing slash (a drive root such as C:\ keeps its slash) and
+# without regard to case. Controlled folder access programs are
+# $ControlledFolderAllowedApps above, not this list.
+# ---------------------------------------------------------------
+$ApprovedDefenderExclusions = @{
+    Path                   = @(
+        # 'C:\Tools\example.exe'
+    )
+    Process                = @()
+    Extension              = @()
+    AttackSurfaceReduction = @()
+}
+
+# ---------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------
 
@@ -223,6 +280,19 @@ function Write-Fail {
     param([Parameter(Mandatory)][string]$Message)
     Write-Host "FAIL: $Message" -ForegroundColor Red
     $script:Failures.Add("${script:Step}: $Message")
+}
+
+# One place for "a restart is needed", so the summary, the Desktop status file
+# and the popup stay the same. Does not restart the PC.
+function Add-RestartReason {
+    param([Parameter(Mandatory)][string]$Message)
+    if (-not $script:RestartReasons.Contains($Message)) {
+        $script:RestartReasons.Add($Message)
+    }
+    $note = "Restart needed: $Message"
+    if (-not $script:Notes.Contains($note)) {
+        $script:Notes.Add($note)
+    }
 }
 
 function Write-Skip {
@@ -263,6 +333,15 @@ function Test-Winget {
     if (Get-Command winget -ErrorAction SilentlyContinue) { return $true }
     Write-Skip 'winget not found. Install App Installer from the Microsoft Store'
     return $false
+}
+
+# 0 = success. -1978335189 (0x8A15002B) = nothing needed an upgrade, which
+# winget uses for both "upgrade" (the list) and "upgrade --all".
+function Test-WingetExit {
+    param([Parameter(Mandatory)][string]$What)
+    $code = $LASTEXITCODE
+    if ($code -in 0, -1978335189) { return }
+    Write-Fail "$What exited $code"
 }
 
 # winget's progress bars and spinner, which come out as lines once redirected
@@ -395,11 +474,14 @@ function Save-RegistryUndo {
         ''
         'Not in this file, as they aren''t registry values (or Windows won''t take'
         'them from a .reg file): DNS servers and DoH addresses, the hosts file'
-        '(backed up beside this file), firewall rules, DEP (bcdedit), PowerShell 2.0,'
+        '(backed up beside this file), firewall rules and firewall profiles,'
+        'DEP (bcdedit), PowerShell 2.0, the SMB1Protocol feature, Quick Assist,'
         'the PowerShell log size, Defender settings and ASR rules, file permissions,'
-        'installed Windows updates, and the Microsoft Update registration (turn off'
-        '"Receive updates for other Microsoft products" in Settings > Windows Update'
-        '> Advanced options).'
+        'System Restore points, installed Windows updates, and the Microsoft Update'
+        'registration (turn off "Receive updates for other Microsoft products" in'
+        'Settings > Windows Update > Advanced options).'
+        'A saved automatic-logon password (DefaultPassword) is deleted and is not'
+        'written here.'
     )) { $lines.Add("; $comment".TrimEnd()) }
 
     # Other accounts' keys last: if they can't be written (user not signed in),
@@ -449,7 +531,7 @@ function Set-ChromePolicyList {
     $i = 1
     foreach ($v in $Values) {
         New-ItemProperty -Path $path -Name "$i" -Value $v -PropertyType String -Force | Out-Null
-        $i++
+        $i += 1
     }
     $names = @($before.Keys) + @((Get-Item -LiteralPath $path).GetValueNames()) | Sort-Object -Unique
     foreach ($n in $names) { Add-RegistryUndo -Path $path -Name $n -Before $before[$n] }
@@ -516,6 +598,9 @@ function Disable-ServiceIfExists {
         # rather than reporting them disabled
         # The startup type is the service key's Start value, so it can go in the
         # undo file (Windows reads it at the next restart)
+        # Already disabled: don't ask for a restart every day just because it
+        # is still running. A restart reason is only for a change made now.
+        $wasDisabled = "$($svc.StartType)" -eq 'Disabled'
         $svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)"
         $before = Get-RegistryValueState -Path $svcKey -Name 'Start'
         try {
@@ -529,6 +614,9 @@ function Disable-ServiceIfExists {
         Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
         if ((Get-Service -Name $Name).Status -ne 'Stopped') {
             Write-Host "  [Service] Disabled $Name, but it's still running until restart  # $Description" -ForegroundColor Yellow
+            if (-not $wasDisabled) {
+                Add-RestartReason "$Name ($Description) was disabled and is still running"
+            }
         } else {
             Write-Host "  [Service] Disabled $Name  # $Description" -ForegroundColor Green
         }
@@ -675,7 +763,7 @@ function Set-ChromeHardening {
     # Enhanced also checks every URL with Google in real time, can upload suspicious
     # downloads for scanning, and warns about breached passwords. It catches new
     # phishing sites sooner, but Google sees far more of your browsing.
-    # Being mandatory, 1 also drops any user who had chosen Enhanced back to Standard.
+    # Being mandatory, 2 keeps Enhanced on, including for anyone who had chosen Standard.
     Set-ChromePolicy -Name 'SafeBrowsingProtectionLevel' -Value 2 -Description 'Enable Safe Browsing (enhanced mode)'
 
     # 1.3 Allow Google Cast to connect to Cast devices on all IP addresses - Disabled
@@ -803,6 +891,7 @@ function Set-ChromeHardening {
             Write-Host "  [Extension] Approved: $name ($id)  # $where" -ForegroundColor Green
         } else {
             Write-Host "  [Extension] Disabling: $name ($id)  # $where" -ForegroundColor Yellow
+            Write-Fail "[Extension] $name ($id) is installed and not approved ($where). Add the ID to `$ApprovedChromeExtensions or remove the extension"
         }
     }
     if ($allowIds.Count -eq 0) {
@@ -935,7 +1024,12 @@ function Set-ChromeHardening {
     # Bookmarks, saved passwords, history, open tabs and extensions stay on this
     # PC only, and passwords saved on your phone won't appear here. You can still
     # sign in to Google websites. Remove this line if you rely on Chrome sync.
-    Set-ChromePolicy -Name 'SyncDisabled' -Value 1 -Description 'Disable Google account sync'
+    #Set-ChromePolicy -Name 'SyncDisabled' -Value 1 -Description 'Disable Google account sync'
+    #------------------
+    # The CIS benchmark says to disable this, but it makes Chrome unusable for
+    # anyone who signs in to Google websites. The policy is left enabled, so sync
+    # works, but the value is set to 0 (enabled) instead of 1 (disabled). If you want to follow CIS, change the value below to 1.
+    Set-ChromePolicy -Name 'SyncDisabled' -Value 0 -Description 'Disable Google account sync'
 
     # 3.12 Enable reporting of usage and crash-related data - Disabled
     # Disables telemetry / crash reporting to Google.
@@ -950,22 +1044,12 @@ function Set-ChromeHardening {
     # already saved aren't deleted; remove them in chrome://settings/payments.
     Set-ChromePolicy -Name 'AutofillCreditCardEnabled' -Value 0 -Description 'Disable credit card autofill'
 
-    # 5.2 Incognito mode availability - Disabled
-    # Disables Incognito mode (reduces ability to hide browsing activity in managed environments).
+    # 5.2 Incognito mode availability - left available
     # Values: 0 = available, 1 = disabled, 2 = forced (every window is Incognito).
-    # With 1, "New Incognito window" disappears. This helps forensics, because all
-    # browsing lands in normal history (1.13). You lose a quick way to open a
-    # session that isn't signed in to anything, which other browser profiles can
-    # also give you.
-    #Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 1 -Description 'Disable Incognito mode'
-    #------------------
-    # The CIS benchmark says to disable this, but it makes Chrome unusable for
-    # many home and small-business users. The policy is left available, so Incognito windows can be opened, but the user can't turn off history (1.13) or sync (3.7). If you want to disable Incognito mode, uncomment the line below.
-    #Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 1 -Description 'Disable Incognito mode'
-    #------------------
-    # The CIS benchmark says to disable this, but it makes Chrome unusable for
-    # many home and small-business users. The policy is left available, so Incognito windows can be opened, but the user can't turn off history (1.13) or sync (3.7). If you want to disable Incognito mode, uncomment the line below.
-    Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 0 -Description 'Disable Incognito mode'
+    # CIS sets 1, which removes "New Incognito window". That is left at 0 here:
+    # history (1.13) and sync (3.7) stay locked on, and Incognito remains usable.
+    # To follow CIS, set the value below to 1.
+    Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 0 -Description 'Leave Incognito mode available'
 
     Write-Host "Chrome policies applied. Verify at chrome://policy/ after restarting Chrome." -ForegroundColor Cyan
 }
@@ -986,7 +1070,8 @@ function Disable-UnneededService {
     Write-Banner "Disabling Unnecessary Windows Services" '.'
 
     # Old SMB1 network-neighbourhood browsing. Not installed on Windows 11 unless
-    # SMB1 was added back, so this usually reports "not present".
+    # SMB1 was added back, so this usually reports "not present". The SMB1Protocol
+    # Windows feature itself is removed by the smb1 step.
     Disable-ServiceIfExists -Name 'Browser' -Description 'Computer Browser (legacy NetBIOS service - L1)'
     # Downloads and updates offline maps for the Maps app. Nothing else needs it.
     Disable-ServiceIfExists -Name 'MapsBroker' -Description 'Downloaded Maps Manager (L2 - reduces location data exposure)'
@@ -1021,14 +1106,19 @@ function Set-SecurityRegistry {
 
     Write-Banner "Applying Additional Windows Security Registry Settings" '.'
 
-    # Example: Disable AutoAdminLogon (MSS)
+    # Disable AutoAdminLogon (MSS)
     # With automatic logon on, Windows signs in by itself at boot using a password
     # stored in the registry (DefaultPassword), readable by admins and some tools.
-    # Setting 0 turns automatic logon off, but doesn't delete a DefaultPassword
-    # value that's already there; check for it and remove it.
+    # Setting 0 turns automatic logon off. A password left behind is deleted here.
+    # Remove-ItemProperty, not Remove-TrackedValue: the undo file must not contain it.
     $mssPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
     Set-TrackedValue -Path $mssPath -Name 'AutoAdminLogon' -Value 0
     Write-Host "  [Registry] AutoAdminLogon = 0  # Disable automatic logon (MSS)" -ForegroundColor Green
+    $savedPassword = Get-RegistryValueState -Path $mssPath -Name 'DefaultPassword'
+    if ($null -ne $savedPassword) {
+        Remove-ItemProperty -Path $mssPath -Name 'DefaultPassword' -Force
+        Write-Fail '[Registry] A saved automatic-logon password (DefaultPassword) was removed. It was not copied into the registry undo file. Set a normal password sign-in if that account was signing in by itself'
+    }
 
     # WDigest Authentication - Disabled (reduces credential theft risk)
     # When on, Windows keeps a reversible copy of each signed-in user's password in
@@ -1198,9 +1288,17 @@ function Repair-HostsFile {
         if ($approved) { $content += @('', '# Approved entries (dailyrunme.ps1 $ApprovedHostsEntries)') + $approved }
         # A read-only hosts file has to be made writable, then put back as it was
         $readOnly = $exists -and (Get-Item -LiteralPath $hosts).IsReadOnly
-        if ($readOnly) { Set-ItemProperty -LiteralPath $hosts -Name IsReadOnly -Value $false }
-        Set-Content -LiteralPath $hosts -Value $content -Encoding ASCII -Force
-        if ($readOnly) { Set-ItemProperty -LiteralPath $hosts -Name IsReadOnly -Value $true }
+        try {
+            if ($readOnly) { Set-ItemProperty -LiteralPath $hosts -Name IsReadOnly -Value $false }
+            Set-Content -LiteralPath $hosts -Value $content -Encoding ASCII -Force
+        } finally {
+            # Put the flag back even when the write fails, or a locked file stays writable
+            if ($readOnly) {
+                try { Set-ItemProperty -LiteralPath $hosts -Name IsReadOnly -Value $true } catch {
+                    Write-Fail "[Hosts] Couldn't put the read-only flag back: $($_.Exception.Message)"
+                }
+            }
+        }
         Clear-DnsClientCache -ErrorAction SilentlyContinue
 
         if (-not $exists) {
@@ -1255,19 +1353,52 @@ function Set-ScriptProtection {
     if ($mpMode -ne 'Normal') {
         Write-Fail "[ASR] Defender isn't the active antivirus (mode: $mpMode); ASR rules not set"
     } else {
-        foreach ($id in $asrRules.Keys) {
-            # Add-MpPreference, not Set-MpPreference: Set replaces every existing rule
-            try {
-                Add-MpPreference -AttackSurfaceReductionRules_Ids $id -AttackSurfaceReductionRules_Actions Enabled -ErrorAction Stop
-            } catch {
-                Write-Fail "[ASR] Couldn't set '$($asrRules[$id])': $($_.Exception.Message)"
-                continue
-            }
-            # Read it back: 1 = block (0 = off, 2 = audit only, 6 = warn)
+        # Actions already stored for one rule, in order. Defender uses the first.
+        # $null when the preference isn't set, so a missing list isn't one empty entry.
+        function Get-AsrActions {
+            param([Parameter(Mandatory)][string]$RuleId)
             $pref = Get-MpPreference
-            $ids = @($pref.AttackSurfaceReductionRules_Ids | ForEach-Object { "$_".ToLowerInvariant() })
-            $i = [array]::IndexOf($ids, $id)
-            if ($i -ge 0 -and @($pref.AttackSurfaceReductionRules_Actions)[$i] -eq 1) {
+            $rawIds = $pref.AttackSurfaceReductionRules_Ids
+            $rawActions = $pref.AttackSurfaceReductionRules_Actions
+            if ($null -eq $rawIds) { return @() }
+            $ids = @($rawIds)
+            $actions = @($rawActions)
+            $found = @()
+            for ($n = 0; $n -lt $ids.Count; $n++) {
+                if ("$($ids[$n])".ToLowerInvariant() -eq $RuleId -and $n -lt $actions.Count) {
+                    $found += ,$actions[$n]
+                }
+            }
+            return $found
+        }
+        foreach ($id in $asrRules.Keys) {
+            $actionsNow = @(Get-AsrActions $id)
+            # One Block entry is the state we want. Anything else (missing, Audit,
+            # Warn, or a copy appended by an earlier run) is cleared and set again.
+            # Add-MpPreference only appends, and Defender keeps the first copy.
+            $already = ($actionsNow.Count -eq 1 -and [int]$actionsNow[0] -eq 1)
+            if (-not $already) {
+                try {
+                    $guard = 0
+                    while (($actionsNow = @(Get-AsrActions $id)).Count -gt 0 -and $guard -lt 30) {
+                        $guard += 1
+                        Remove-MpPreference -AttackSurfaceReductionRules_Ids $id `
+                            -AttackSurfaceReductionRules_Actions ([int]$actionsNow[0]) -ErrorAction Stop
+                    }
+                    if (@(Get-AsrActions $id).Count -gt 0) {
+                        Write-Fail "[ASR] Couldn't clear the old copies of '$($asrRules[$id])'"
+                        continue
+                    }
+                    Add-MpPreference -AttackSurfaceReductionRules_Ids $id `
+                        -AttackSurfaceReductionRules_Actions Enabled -ErrorAction Stop
+                } catch {
+                    Write-Fail "[ASR] Couldn't set '$($asrRules[$id])': $($_.Exception.Message)"
+                    continue
+                }
+            }
+            # 1 = block (0 = off, 2 = audit only, 6 = warn)
+            $after = @(Get-AsrActions $id)
+            if ($after.Count -ge 1 -and [int]$after[0] -eq 1) {
                 Write-Host "  [ASR] Block: $($asrRules[$id])" -ForegroundColor Green
             } else {
                 Write-Fail "[ASR] '$($asrRules[$id])' didn't take effect (check Tamper Protection or other management)"
@@ -1312,11 +1443,18 @@ function Set-ScriptProtection {
     try {
         $ps2 = Get-WindowsOptionalFeature -Online -ErrorAction Stop |
             Where-Object { $_.FeatureName -eq 'MicrosoftWindowsPowerShellV2Root' }
-        if (-not $ps2 -or "$($ps2.State)" -notlike 'Enable*') {
+        $ps2State = if ($ps2) { "$($ps2.State)" } else { 'Disabled' }
+        if ($ps2State -eq 'DisablePending') {
+            Write-Host '  [Feature] PowerShell 2.0 removal finishes at the next restart' -ForegroundColor Yellow
+            Add-RestartReason 'Removing PowerShell 2.0 finishes at the next restart'
+        } elseif ($ps2State -notlike 'Enable*') {
             Write-Host "  [Feature] PowerShell 2.0 already removed" -ForegroundColor Green
         } else {
             $result = Disable-WindowsOptionalFeature -Online -FeatureName 'MicrosoftWindowsPowerShellV2Root' -NoRestart -ErrorAction Stop
-            $note = if ($result.RestartNeeded) { ', finishes at next restart' } else { '' }
+            if ($result.RestartNeeded) {
+                Add-RestartReason 'Removing PowerShell 2.0 finishes at the next restart'
+            }
+            $note = if ($result.RestartNeeded) { ' (finishes at the next restart)' } else { '' }
             Write-Host "  [Feature] PowerShell 2.0 removed$note" -ForegroundColor Green
         }
     } catch {
@@ -1442,10 +1580,24 @@ function Set-OfficeHardening {
     Set-RegistryValue -Path $officeUpdatePath -Name 'hideenabledisableupdates' -Value 1 -Description 'Users can''t turn Office updates off (CIS 1.1.5.2)'
 
     # 1.3.1 Block Flash activation in Office documents - Block all activation
-    # Flash was removed from Windows in 2021, so this mostly records the setting
-    # CIS checks for; it would stop a document loading Flash if a copy remained.
-    Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Office\Common\COM Compatibility' -Name 'Comment' `
-        -Value 'Block all Flash activation' -Type String -Description 'Block Flash in Office documents (CIS 1.3.1)'
+    # 0x400 is Office's COM kill bit for the Shockwave Flash control. Flash was
+    # removed from Windows in 2021; this still stops a document loading it if a
+    # copy remained. The Policies key is what CIS checks. The Office and
+    # WOW6432Node keys are what 64-bit and 32-bit Office read directly.
+    # A previous version of this script wrote a Comment string on the parent
+    # key, which Office ignores; that value is removed.
+    $flashClsid = '{D27CDB6E-AE6D-11cf-96B8-444553540000}'
+    Remove-TrackedValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Office\Common\COM Compatibility' -Name 'Comment'
+    foreach ($flashRoot in @(
+        'HKLM:\SOFTWARE\Policies\Microsoft\Office\Common\COM Compatibility'
+        'HKLM:\SOFTWARE\Microsoft\Office\Common\COM Compatibility'
+        'HKLM:\SOFTWARE\Microsoft\Office\16.0\Common\COM Compatibility'
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\Common\COM Compatibility'
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\16.0\Common\COM Compatibility'
+    )) {
+        Set-TrackedValue -Path "$flashRoot\$flashClsid" -Name 'Compatibility Flags' -Value 0x400
+    }
+    Write-Host '  [Office] Flash activation blocked (Compatibility Flags = 0x400, CIS 1.3.1)' -ForegroundColor Green
 
     # 1.3.2 Restrict legacy JScript execution for Office - Enabled
     # Stops Office's web content from running the old JScript engine
@@ -1707,7 +1859,7 @@ function Set-OfficeHardening {
                     $type = if ($s[2] -is [string]) { 'String' } else { 'DWord' }
                     Set-TrackedValue -Path $key -Name $s[1] -Value $s[2] -Type $type
                 }
-                $done++
+                $done += 1
             } catch {
                 $errors.Add("$($s[0])\$($s[1]): $($_.Exception.Message)")
             }
@@ -1787,6 +1939,8 @@ function Set-ShortcutProtection {
             }
         }
         Write-Host "  [Firewall] Internet blocked for $($blocked -join ', ')" -ForegroundColor Green
+        # The firewall step turns a profile back on. This is only a backstop, in
+        # case that step failed and these rules would then do nothing.
         $offProfiles = @(Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object { -not $_.Enabled })
         if ($offProfiles) {
             Write-Host "  [Firewall] Windows Firewall is off for the $(($offProfiles.Name) -join ', ') profile(s), where these rules do nothing" -ForegroundColor Yellow
@@ -1833,7 +1987,8 @@ function Set-ExplorerView {
     $settings = @(
         @{ Key = 'Advanced'; Name = 'HideFileExt'; Value = 0; What = 'file extensions shown' }
         @{ Key = 'Advanced'; Name = 'Hidden'; Value = 1; What = 'hidden files shown' }
-        @{ Key = 'Advanced'; Name = 'ShowSuperHidden'; Value = 1; What = 'protected operating system files shown' }
+        #@{ Key = 'Advanced'; Name = 'ShowSuperHidden'; Value = 1; What = 'protected operating system files shown' }
+        @{ Key = 'Advanced'; Name = 'ShowSuperHidden'; Value = 0; What = 'protected operating system files NOT shown' }
         @{ Key = 'CabinetState'; Name = 'FullPath'; Value = 1; What = 'full path in the title bar' }
     )
     Invoke-InEachUserHive {
@@ -1909,10 +2064,40 @@ function Enable-Dep {
             if ($canChange) {
                 bcdedit /set '{current}' nx OptOut | Out-Null
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Fail "[DEP] bcdedit couldn't change DEP (exit $LASTEXITCODE); still $nxNow"
+                    # Suspend-BitLocker -RebootCount 1 would otherwise stay off until the
+                    # next restart even though the boot setting did not change.
+                    # Resume-BitLocker turns protection back on now.
+                    if ($bitlockerOn) {
+                        try {
+                            Resume-BitLocker -MountPoint $env:SystemDrive -ErrorAction Stop | Out-Null
+                            Write-Fail "[DEP] bcdedit couldn't change DEP (exit $LASTEXITCODE); still $nxNow. BitLocker protection is back on"
+                        } catch {
+                            Write-Fail "[DEP] bcdedit couldn't change DEP (exit $LASTEXITCODE); still $nxNow. BitLocker is still suspended until the next restart: $($_.Exception.Message)"
+                        }
+                    } else {
+                        Write-Fail "[DEP] bcdedit couldn't change DEP (exit $LASTEXITCODE); still $nxNow"
+                    }
                 } else {
                     Write-Host "  [DEP] $nxNow -> OptOut: on for all programs after the next restart" -ForegroundColor Green
+                    Add-RestartReason 'Data Execution Prevention now covers all programs'
                 }
+            }
+        }
+        # The line above is what the next boot will use. If it already says OptOut
+        # but the running policy does not, the PC has not rebooted since the change.
+        # 1 = AlwaysOn, 3 = OptOut. Don't touch BitLocker here: nothing is changing.
+        if ($nxNow -in 'OptOut', 'AlwaysOn') {
+            $runningDep = $null
+            try {
+                $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+                if ($os.PSObject.Properties['DataExecutionPrevention_SupportPolicy']) {
+                    $runningDep = [int]$os.DataExecutionPrevention_SupportPolicy
+                }
+            } catch {
+                $runningDep = $null
+            }
+            if ($null -ne $runningDep -and $runningDep -notin 1, 3) {
+                Add-RestartReason 'Data Execution Prevention was set for all programs and is waiting for a restart'
             }
         }
     }
@@ -1981,7 +2166,7 @@ function Set-CoreIsolation {
     }
     if ($changed.Count) {
         $restart = @($changed | Where-Object { $_ -ne 'Microsoft Vulnerable Driver Blocklist' })
-        if ($restart) { $script:Notes.Add("Restart Windows to turn on $($restart -join ', ')") }
+        if ($restart) { Add-RestartReason "Turn on $($restart -join ', ')" }
     }
 
     # What's running now. Win32_DeviceGuard lists running services by number:
@@ -2079,6 +2264,10 @@ function Disable-DeveloperMode {
 #   Automatic sample submission - "send safe samples": suspicious program
 #     files are uploaded for analysis automatically. Files that may hold
 #     personal data (documents, email) aren't sent without asking.
+#   Potentially unwanted app protection - blocks adware and bundleware that
+#     isn't quite malware, the "PUA" switch in Windows Security.
+#   Network protection - blocks programs, not only browsers, from connecting
+#     to sites Microsoft has marked malicious. Needs cloud-delivered protection.
 #   Dev Drive protection - Dev Drives (a fast volume type for code) are
 #     scanned in performance mode, which checks files just after opening
 #     them instead of before. Without it a Dev Drive gets regular scanning,
@@ -2119,6 +2308,16 @@ function Set-DefenderSetting {
                 Set   = @{ SubmitSamplesConsent = 'SendSafeSamples' }
                 Check = { param($p) "$($p.SubmitSamplesConsent)" -in '1', 'SendSafeSamples' }
             }
+            # 0 = off, 1 = on, 2 = audit. Audit is not enough: it only logs.
+            'Potentially unwanted app protection' = @{
+                Set   = @{ PUAProtection = 'Enabled' }
+                Check = { param($p) "$($p.PUAProtection)" -in '1', 'Enabled' }
+            }
+            # 0 = off, 1 = block, 2 = audit. Enabled and Block are both the block mode.
+            'Network protection' = @{
+                Set   = @{ EnableNetworkProtection = 'Enabled' }
+                Check = { param($p) "$($p.EnableNetworkProtection)" -in '1', 'Enabled', 'Block' }
+            }
             'Dev Drive protection' = @{
                 Set   = @{ PerformanceModeStatus = 'Enabled' }
                 Check = { param($p) "$($p.PerformanceModeStatus)" -in '0', 'Enabled' }
@@ -2148,12 +2347,23 @@ function Set-DefenderSetting {
             Write-Host "  [Defender] Couldn't allow antivirus on Dev Drives (fsutil exit $LASTEXITCODE); Windows may be too old for Dev Drives" -ForegroundColor Yellow
         }
 
+        $folderAllowed = @()
+        try { $folderAllowed = @((Get-MpPreference).ControlledFolderAccessAllowedApplications) } catch { $folderAllowed = @() }
         foreach ($app in $ControlledFolderAllowedApps) {
+            if ($folderAllowed -contains $app) {
+                Write-Host "  [Defender] Controlled folder access already allows $app" -ForegroundColor Green
+                continue
+            }
             try {
                 Add-MpPreference -ControlledFolderAccessAllowedApplications $app -ErrorAction Stop
                 Write-Host "  [Defender] Controlled folder access allows $app" -ForegroundColor Green
             } catch {
-                Write-Fail "[Defender] Couldn't allow $app in Controlled folder access: $($_.Exception.Message)"
+                # A path stored with different casing still counts as present
+                if ($_.Exception.Message -match 'already') {
+                    Write-Host "  [Defender] Controlled folder access already allows $app" -ForegroundColor Green
+                } else {
+                    Write-Fail "[Defender] Couldn't allow $app in Controlled folder access: $($_.Exception.Message)"
+                }
             }
         }
 
@@ -2402,6 +2612,7 @@ function Update-Windows {
     try {
         if ((New-Object -ComObject Microsoft.Update.SystemInfo).RebootRequired) {
             Write-Host '  [Windows Update] A restart from earlier updates is waiting; some updates may not install until then' -ForegroundColor Yellow
+            Add-RestartReason 'Windows Update is already waiting for a restart'
         }
     } catch {
         Write-Verbose 'restart status unknown'
@@ -2439,7 +2650,7 @@ function Update-Windows {
     $restart = $false
     $i = 0
     foreach ($u in $wanted) {
-        $i++
+        $i += 1
         $kind = if ($u.Type -eq 2) { 'Driver' } else { 'Update' }
         $title = "[$kind] $($u.Title)"
         Write-Host "  ($i/$($wanted.Count)) $title" -ForegroundColor Cyan
@@ -2476,7 +2687,7 @@ function Update-Windows {
             Write-Fail "[Windows Update] ${title}: $($_.Exception.Message)"
         }
     }
-    if ($restart) { $script:Notes.Add('Restart Windows to finish installing Windows updates') }
+    if ($restart) { Add-RestartReason 'Windows updates that were just installed need a restart' }
 }
 
 # patchoffice: Microsoft 365 Apps and Office 2019/2021/2024 install as Click-to-Run,
@@ -2615,10 +2826,12 @@ function Update-StoreApp {
     if (Test-Winget) {
         Write-Banner 'winget upgrade --source msstore' '.'
         Invoke-Native winget 'upgrade', '--source', 'msstore', '--accept-source-agreements' -Skip $WingetProgress
+        Test-WingetExit 'winget upgrade --source msstore'
         Write-Banner 'winget upgrade --all --source msstore' '.'
         Invoke-Native winget 'upgrade', '--all', '--include-unknown', '--source', 'msstore',
             '--accept-source-agreements', '--accept-package-agreements',
             '--disable-interactivity' -Skip $WingetProgress
+        Test-WingetExit 'winget upgrade --all --source msstore'
     }
     Write-Banner 'Store update scan' '.'
     try {
@@ -2637,6 +2850,7 @@ function Update-WingetPackage {
     Write-Banner 'winget upgrade --all' '.'
     Invoke-Native winget 'upgrade', '--all', '--include-unknown', '--accept-source-agreements',
         '--accept-package-agreements', '--disable-interactivity' -Skip $WingetProgress
+    Test-WingetExit 'winget upgrade --all'
 }
 
 # msert: Microsoft Safety Scanner, a second opinion that doesn't depend on Defender's
@@ -2790,6 +3004,18 @@ function Start-EmsisoftScan {
 function Start-DefenderScan {
     $cpu = 50
     $log = Join-Path $LogDir 'defender-scan.log'
+    # A second run while the first scan is still going would delete its log and
+    # start another full scan on top of it.
+    try {
+        $mp = Get-MpComputerStatus -ErrorAction Stop
+        if ($mp.FullScanInProgress -or $mp.QuickScanInProgress) {
+            Write-Host "A Defender scan is already running; this run left it alone and did not replace $log" -ForegroundColor Yellow
+            $script:Notes.Add('A Defender scan was already running, so this run did not start another')
+            return
+        }
+    } catch {
+        Write-Verbose "scan status unknown: $($_.Exception.Message)"
+    }
     $platform = Join-Path $env:ProgramData 'Microsoft\Windows Defender\Platform'
     # Newest version first; numbers are padded so 4.18.10 sorts after 4.18.9
     $mpcmd = Get-ChildItem -LiteralPath $platform -Directory -ErrorAction SilentlyContinue |
@@ -2918,11 +3144,18 @@ function Test-SystemDisk {
 # mywinprocsigs: running programs without a valid Authenticode signature
 function Find-UnsignedProcess {
     Write-Banner 'Processes W/O Valid Authenticode Signature' '.'
-    Get-Process | Where-Object Path | ForEach-Object Path | Sort-Object -Unique |
+    # Listed for review. Many legitimate programs are unsigned, so this is a note
+    # in the summary rather than a failure. Renamed or relocated Windows programs
+    # are the failure, in Find-LolbasCopy.
+    $unsigned = @(Get-Process | Where-Object Path | ForEach-Object Path | Sort-Object -Unique |
         ForEach-Object {
             $s = Get-AuthenticodeSignature -LiteralPath $_ -ErrorAction SilentlyContinue
             if ($s -and $s.Status -ne 'Valid') { '{0,-14} {1}' -f $s.Status, $_ }
-        }
+        })
+    $unsigned
+    if ($unsigned.Count) {
+        $script:Notes.Add("${script:Step}: $($unsigned.Count) running programs have no valid Authenticode signature (listed above)")
+    }
 }
 
 # The LOLBAS list (lolbas-project.github.io) of Windows programs attackers misuse,
@@ -2984,14 +3217,14 @@ function Find-LolbasCopy {
         if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName', $false) -notlike 'Microsoft*') { continue }
         if ($name -ne $leaf) {
             "ALERT=`"Renamed Windows program=$p is $name`""
-            $found++
+            $found += 1
             continue
         }
         if ($where[$name] | Where-Object { $p -like $_ }) { continue }
         if ((Split-Path -Parent $p) -eq $env:SystemRoot) { continue }
         if (($trusted | Where-Object { $p -like $_ }) -and $p -notmatch $writable) { continue }
         "ALERT=`"Windows program=$name running from $p, outside its usual folders`""
-        $found++
+        $found += 1
     }
 
     if ($found) {
@@ -3019,8 +3252,8 @@ function Test-StartupEntry {
     Write-Banner 'Startup Entries Running LOLBAS Programs' '.'
     $ErrorActionPreference = 'SilentlyContinue'
     $count = @{ found = 0; noted = 0 }
-    function Alert([string]$m) { "ALERT=`"$m`""; $count.found++ }
-    function Note([string]$m) { "NOTE=`"$m`""; $count.noted++ }
+    function Alert([string]$m) { "ALERT=`"$m`""; $count.found += 1 }
+    function Note([string]$m) { "NOTE=`"$m`""; $count.noted += 1 }
 
     $names = @{}
     $list = Get-LolbasList
@@ -3132,7 +3365,7 @@ function Test-StartupEntry {
         if ($f.DirectoryName -match '\\Start Menu\\Programs\\Startup$') { continue }
         $l = $sh.CreateShortcut($f.FullName)
         if (-not $l) { continue }
-        $shortcuts++
+        $shortcuts += 1
         $target = [Environment]::ExpandEnvironmentVariables($l.TargetPath)
         $sargs = "$($l.Arguments)"
         if ($sargs -match '\s{20,}|[\r\n]') {
@@ -3186,7 +3419,7 @@ function Test-DriverSignature {
     Write-Banner 'Windows Driver Signature Check' '.'
     $ErrorActionPreference = 'SilentlyContinue'
     $count = @{ found = 0; third = 0 }
-    function Alert([string]$m) { "ALERT=`"$m`""; $count.found++ }
+    function Alert([string]$m) { "ALERT=`"$m`""; $count.found += 1 }
     function Note([string]$m) { "NOTE=`"$m`"" }
     # Kernel paths look like \SystemRoot\..., \??\C:\..., \Windows\..., or System32\...
     function Norm([string]$p) {
@@ -3284,7 +3517,7 @@ function Test-DriverSignature {
         # Third-party drivers are often signed by Microsoft too, as its Hardware Compatibility Publisher
         $signer = $s.SignerCertificate.GetNameInfo('SimpleName', $false)
         if ($signer -in 'Microsoft Windows', 'Microsoft Windows Publisher', 'Microsoft Corporation') { continue }
-        $count.third++
+        $count.third += 1
         Note "Third-party driver=$p signer=$signer company=$("$((Get-Item -LiteralPath $p).VersionInfo.CompanyName)".Trim())"
     }
 
@@ -3296,6 +3529,567 @@ function Test-DriverSignature {
     } else {
         'No driver problems found, and every loaded driver is signed by Windows'
     }
+}
+
+# ---------------------------------------------------------------
+# Restore point, removals, and checks that only report
+# ---------------------------------------------------------------
+
+# One restore point before the hardening steps. Windows refuses a second point
+# within 24 hours (SystemRestorePointCreationFrequency, left at its default);
+# that refusal is a note, not a failure. Anything else is a failure, and the
+# run continues either way.
+function New-DailyRestorePoint {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Creating a System Restore Point' '.'
+
+    try {
+        Enable-ComputerRestore -Drive $env:SystemDrive -ErrorAction Stop
+    } catch {
+        Write-Fail "[Restore point] Couldn't turn on System Restore for ${env:SystemDrive}: $($_.Exception.Message)"
+        return
+    }
+
+    $desc = "dailyrunme $runStamp"
+    $warn = @()
+    $created = $false
+    try {
+        Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS `
+            -WarningVariable warn -WarningAction Continue -ErrorAction Stop
+        $created = $true
+    } catch {
+        $warn += "$_"
+    }
+    $warnText = (@($warn) | ForEach-Object { "$_" }) -join ' '
+    $mine = @()
+    try {
+        $mine = @(Get-ComputerRestorePoint -ErrorAction Stop | Where-Object { $_.Description -eq $desc })
+    } catch {
+        $mine = @()
+    }
+    if ($mine.Count -gt 0 -or ($created -and $warnText -notmatch 'already been created|1440 minutes')) {
+        Write-Host "  [Restore point] Created: $desc" -ForegroundColor Green
+        return
+    }
+    if ($warnText -match 'already been created|1440 minutes') {
+        Write-Host '  [Restore point] Windows skipped it: a restore point was created in the last 24 hours' -ForegroundColor Yellow
+        $note = 'A restore point was already created in the last 24 hours, so this run did not create another'
+        if (-not $script:Notes.Contains($note)) { $script:Notes.Add($note) }
+        return
+    }
+    $why = if ($warnText) { $warnText } else { 'Checkpoint-Computer did not create it' }
+    Write-Fail "[Restore point] Couldn't create one: $why"
+}
+
+# Quick Assist is the program tech-support scams talk people into opening.
+# Remove the installed app, the copy Windows would reinstall for a new user,
+# and the Windows capability. If it was here, removing it is a failure so a
+# return (Windows Update puts it back) shows up the next day too.
+function Remove-QuickAssist {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Removing Quick Assist' '.'
+
+    $removed = [System.Collections.Generic.List[string]]::new()
+    $found = $false
+    $listFailed = $false
+    # -AllUsers lists the same package once per user. Remove each full name once.
+    $seenPkg = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    $packages = @()
+    try {
+        $packages = @(Get-AppxPackage -AllUsers -Name '*QuickAssist*' -ErrorAction Stop)
+    } catch {
+        $listFailed = $true
+        Write-Fail "[Quick Assist] Couldn't list installed apps: $($_.Exception.Message)"
+    }
+    foreach ($pkg in $packages) {
+        if (-not $pkg.PackageFullName -or -not $seenPkg.Add($pkg.PackageFullName)) { continue }
+        $found = $true
+        try {
+            Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction Stop
+            $removed.Add($pkg.Name)
+        } catch {
+            # -AllUsers is missing on older Windows; remove it for this user instead
+            if ("$_" -match 'AllUsers') {
+                try {
+                    Remove-AppxPackage -Package $pkg.PackageFullName -ErrorAction Stop
+                    $removed.Add("$($pkg.Name) (this user)")
+                } catch {
+                    Write-Fail "[Quick Assist] Couldn't remove $($pkg.Name): $($_.Exception.Message)"
+                }
+            } else {
+                Write-Fail "[Quick Assist] Couldn't remove $($pkg.Name): $($_.Exception.Message)"
+            }
+        }
+    }
+
+    $provisioned = @()
+    try {
+        $provisioned = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop | Where-Object {
+            $display = ''
+            $full = ''
+            if ($_.PSObject.Properties['DisplayName']) { $display = "$($_.DisplayName)" }
+            if ($_.PSObject.Properties['PackageName']) { $full = "$($_.PackageName)" }
+            $display -match 'QuickAssist' -or $full -match 'QuickAssist'
+        })
+    } catch {
+        $listFailed = $true
+        Write-Fail "[Quick Assist] Couldn't list provisioned apps: $($_.Exception.Message)"
+    }
+    foreach ($pkg in $provisioned) {
+        $found = $true
+        $full = ''
+        if ($pkg.PSObject.Properties['PackageName']) { $full = "$($pkg.PackageName)" }
+        $label = if ($pkg.PSObject.Properties['DisplayName'] -and $pkg.DisplayName) { "$($pkg.DisplayName)" } else { $full }
+        if (-not $full) {
+            Write-Fail "[Quick Assist] Couldn't remove provisioned $label (no package name)"
+            continue
+        }
+        try {
+            Remove-AppxProvisionedPackage -Online -PackageName $full -ErrorAction Stop | Out-Null
+            $removed.Add("provisioned $label")
+        } catch {
+            Write-Fail "[Quick Assist] Couldn't remove provisioned ${label}: $($_.Exception.Message)"
+        }
+    }
+
+    $caps = @()
+    try {
+        $caps = @(Get-WindowsCapability -Online -Name 'App.Support.QuickAssist*' -ErrorAction Stop |
+            Where-Object { "$($_.State)" -ne 'NotPresent' })
+    } catch {
+        $listFailed = $true
+        Write-Fail "[Quick Assist] Couldn't list the Quick Assist Windows capability: $($_.Exception.Message)"
+    }
+    foreach ($cap in $caps) {
+        $found = $true
+        try {
+            $result = Remove-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop
+            $removed.Add($cap.Name)
+            if ($result.RestartNeeded) {
+                Add-RestartReason 'Removing Quick Assist finishes at the next restart'
+            }
+        } catch {
+            Write-Fail "[Quick Assist] Couldn't remove $($cap.Name): $($_.Exception.Message)"
+        }
+    }
+
+    if ($removed.Count -gt 0) {
+        Write-Fail "[Quick Assist] Was installed ($($removed -join ', ')); removed it. Windows Update sometimes puts it back, which the next run will catch"
+    } elseif (-not $found -and -not $listFailed) {
+        Write-Host '  [Quick Assist] Not installed' -ForegroundColor Green
+    }
+}
+
+# The SMB1Protocol Windows feature, not the Computer Browser service (that one
+# is in cis-services). -NoRestart: this script never restarts the PC. A removal
+# that is waiting on a restart keeps saying so until the PC is restarted.
+function Remove-SmbV1 {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Removing SMBv1' '.'
+
+    try {
+        $feature = Get-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -ErrorAction Stop
+    } catch {
+        Write-Fail "[SMB1] Couldn't check the SMB1Protocol feature: $($_.Exception.Message)"
+        return
+    }
+    $state = "$($feature.State)"
+    if ($state -eq 'Disabled') {
+        Write-Host '  [SMB1] SMB1Protocol is not enabled' -ForegroundColor Green
+        return
+    }
+    if ($state -eq 'DisablePending') {
+        Write-Host '  [SMB1] SMB1Protocol removal finishes at the next restart' -ForegroundColor Yellow
+        Add-RestartReason 'Removing SMBv1 finishes at the next restart'
+        return
+    }
+    try {
+        $result = Disable-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -NoRestart -ErrorAction Stop
+    } catch {
+        Write-Fail "[SMB1] Couldn't turn off SMB1Protocol (${state}): $($_.Exception.Message)"
+        return
+    }
+    if ($result.RestartNeeded) {
+        Add-RestartReason 'Removing SMBv1 finishes at the next restart'
+    }
+    $pending = if ($result.RestartNeeded) { ' It finishes at the next restart.' } else { '' }
+    Write-Fail "[SMB1] SMB1Protocol was $state and has been turned off.$pending"
+}
+
+# A profile that is off makes every firewall rule, including the LOLBin rules
+# in the next step, do nothing. Turn it back on and fail, so the fact that it
+# was off stays visible. Runs before lnkprotect.
+function Enable-FirewallProfile {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking Windows Firewall' '.'
+
+    try {
+        $profiles = @(Get-NetFirewallProfile -ErrorAction Stop)
+    } catch {
+        Write-Fail "[Firewall] Couldn't read the firewall profiles: $($_.Exception.Message)"
+        return
+    }
+    $off = @($profiles | Where-Object { -not $_.Enabled })
+    if ($off.Count -eq 0) {
+        Write-Host "  [Firewall] On for $(($profiles.Name) -join ', ')" -ForegroundColor Green
+        return
+    }
+    foreach ($p in $off) {
+        try {
+            Set-NetFirewallProfile -Name $p.Name -Enabled True -ErrorAction Stop
+            Write-Fail "[Firewall] The $($p.Name) profile was off; turned it back on"
+        } catch {
+            Write-Fail "[Firewall] The $($p.Name) profile is off and couldn't be turned on: $($_.Exception.Message)"
+        }
+    }
+}
+
+# AutoPlay runs whatever a USB stick or a CD offers. Off for the whole PC
+# (NoDriveTypeAutoRun = 0xFF is every drive type, NoAutorun stops the old
+# dialog) and for each user (DisableAutoplay). A change is a failure so it
+# is visible; the values are in the registry undo file.
+function Disable-AutoPlay {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Turning Off AutoPlay' '.'
+
+    $turnedOff = [System.Collections.Generic.List[string]]::new()
+    $policy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $drive = Get-RegistryValueState -Path $policy -Name 'NoDriveTypeAutoRun'
+    $autorun = Get-RegistryValueState -Path $policy -Name 'NoAutorun'
+    $driveOff = ($null -ne $drive -and $drive.Kind -eq 'DWord' -and [int]$drive.Data -eq 255)
+    $autorunOff = ($null -ne $autorun -and $autorun.Kind -eq 'DWord' -and [int]$autorun.Data -eq 1)
+    if (-not $driveOff -or -not $autorunOff) { $turnedOff.Add('this PC') }
+    Set-TrackedValue -Path $policy -Name 'NoDriveTypeAutoRun' -Value 0xFF
+    Set-TrackedValue -Path $policy -Name 'NoAutorun' -Value 1
+
+    # $turnedOff is this function's list; the scriptblock below adds to it
+    Invoke-InEachUserHive {
+        param($root, $label)
+        try {
+            $key = "$root\Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers"
+            $now = Get-RegistryValueState -Path $key -Name 'DisableAutoplay'
+            $off = ($null -ne $now -and $now.Kind -eq 'DWord' -and [int]$now.Data -eq 1)
+            if (-not $off) { $turnedOff.Add($label) }
+            Set-TrackedValue -Path $key -Name 'DisableAutoplay' -Value 1
+        } catch {
+            Write-Fail "[AutoPlay] ${label}: couldn't turn AutoPlay off: $($_.Exception.Message)"
+        }
+    }
+    if ($turnedOff.Count -gt 0) {
+        Write-Fail "[AutoPlay] Was on for $($turnedOff -join ', '); turned off"
+    } else {
+        Write-Host '  [AutoPlay] Already off' -ForegroundColor Green
+    }
+}
+
+# A trailing slash is ignored, except on a drive root (C:\) or a UNC share
+# root (\\server\share\). Comparison is case-insensitive.
+function ConvertTo-NormalizedDefenderPath {
+    param([string]$Value)
+    $p = "$Value".Trim()
+    if (-not $p) { return '' }
+    if ($p -match '^[A-Za-z]:\\$') { return $p.ToLowerInvariant() }
+    if ($p -match '^\\\\[^\\]+\\[^\\]+\\$') { return $p.ToLowerInvariant() }
+    return $p.TrimEnd('\', '/').ToLowerInvariant()
+}
+
+function ConvertTo-NormalizedDefenderItem {
+    param(
+        [string]$Value,
+        [ValidateSet('path', 'extension')][string]$Kind
+    )
+    if ($Kind -eq 'extension') {
+        return "$Value".Trim().ToLowerInvariant().TrimStart('.')
+    }
+    $p = "$Value".Trim()
+    if ($p -match '[\\/]') { return (ConvertTo-NormalizedDefenderPath $p) }
+    return $p.ToLowerInvariant()
+}
+
+# $null stays an empty list. A single value must not be wrapped before that
+# test: @($null) is a one-element list in Windows PowerShell 5.1.
+function Get-DefenderPreferenceList {
+    param(
+        $Preference,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $prop = $Preference.PSObject.Properties[$Name]
+    if (-not $prop -or $null -eq $prop.Value) { return @() }
+    return @($prop.Value)
+}
+
+# Fail on any exclusion Defender has that the lists at the top don't name.
+# Does not remove them: an exclusion can be a program the PC needs, and the
+# failure is what makes it get added to the list, or deleted, on purpose.
+function Test-DefenderExclusion {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking Defender Exclusions' '.'
+
+    try {
+        $pref = Get-MpPreference -ErrorAction Stop
+    } catch {
+        Write-Fail "[Defender] Couldn't read exclusions: $($_.Exception.Message)"
+        return
+    }
+    $checks = @(
+        @{ Label = 'path'; Property = 'ExclusionPath'; Approved = @($ApprovedDefenderExclusions.Path); Kind = 'path' }
+        @{ Label = 'process'; Property = 'ExclusionProcess'; Approved = @($ApprovedDefenderExclusions.Process); Kind = 'path' }
+        @{ Label = 'extension'; Property = 'ExclusionExtension'; Approved = @($ApprovedDefenderExclusions.Extension); Kind = 'extension' }
+        @{ Label = 'ASR-only exclusion'; Property = 'AttackSurfaceReductionOnlyExclusions'; Approved = @($ApprovedDefenderExclusions.AttackSurfaceReduction); Kind = 'path' }
+        @{ Label = 'Controlled folder access app'; Property = 'ControlledFolderAccessAllowedApplications'; Approved = @($ControlledFolderAllowedApps); Kind = 'path' }
+    )
+    $extra = 0
+    foreach ($check in $checks) {
+        $approved = @($check.Approved | ForEach-Object {
+            ConvertTo-NormalizedDefenderItem -Value "$_" -Kind $check.Kind
+        } | Where-Object { $_ })
+        foreach ($raw in @(Get-DefenderPreferenceList -Preference $pref -Name $check.Property)) {
+            if ($null -eq $raw) { continue }
+            $text = "$raw".Trim()
+            if (-not $text) { continue }
+            $norm = ConvertTo-NormalizedDefenderItem -Value $text -Kind $check.Kind
+            if ($approved -notcontains $norm) {
+                $extra += 1
+                Write-Fail "[Defender] Unapproved $($check.Label): $text"
+            }
+        }
+    }
+    if ($extra -eq 0) {
+        Write-Host '  [Defender] Exclusions match the approved lists' -ForegroundColor Green
+    }
+}
+
+# Report only. Turning these off from here could cut off a remote session
+# that is being used on purpose, including one that is running this script.
+function Test-RemoteAccess {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking Remote Access' '.'
+
+    $rdp = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -ErrorAction SilentlyContinue
+    if ($rdp -and $rdp.PSObject.Properties['fDenyTSConnections'] -and [int]$rdp.fDenyTSConnections -eq 0) {
+        Write-Fail '[Remote access] Remote Desktop is allowed (fDenyTSConnections = 0). This script does not turn it off, so a remote session is not cut off'
+    } else {
+        Write-Host '  [Remote access] Remote Desktop is not allowed' -ForegroundColor Green
+    }
+
+    $assist = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' -Name 'fAllowToGetHelp' -ErrorAction SilentlyContinue
+    if ($assist -and $assist.PSObject.Properties['fAllowToGetHelp'] -and [int]$assist.fAllowToGetHelp -eq 1) {
+        Write-Fail '[Remote access] Remote Assistance is on (fAllowToGetHelp = 1). This script does not turn it off'
+    } else {
+        Write-Host '  [Remote access] Remote Assistance is off' -ForegroundColor Green
+    }
+
+    $winrm = Get-Service -Name 'WinRM' -ErrorAction SilentlyContinue
+    $winrmRunning = $winrm -and "$($winrm.Status)" -eq 'Running'
+    $listeners = @()
+    $listenersKnown = $false
+    try {
+        $listeners = @(Get-ChildItem 'WSMan:\localhost\Listener' -ErrorAction Stop)
+        $listenersKnown = $true
+    } catch {
+        $listenersKnown = $false
+    }
+    if ($winrmRunning -or ($listenersKnown -and $listeners.Count -gt 0)) {
+        $why = @()
+        if ($winrmRunning) { $why += 'the WinRM service is running' }
+        if ($listenersKnown -and $listeners.Count -gt 0) { $why += "$($listeners.Count) WinRM listener(s) are configured" }
+        Write-Fail "[Remote access] $($why -join ', '). This script does not turn WinRM off"
+    } else {
+        Write-Host '  [Remote access] WinRM is not running and no listener was found' -ForegroundColor Green
+    }
+}
+
+# Report only. A working UAC level is left as it is. Fail when UAC is off,
+# the prompt is not on the secure desktop, or an admin elevates with no prompt
+# (ConsentPromptBehaviorAdmin = 0). Other prompt styles are left alone.
+function Test-UacSetting {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking User Account Control' '.'
+
+    $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $item = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+    $read = {
+        param([string]$Name)
+        if ($item -and $item.PSObject.Properties[$Name]) { return [int]$item.$Name }
+        return $null
+    }
+    $bad = $false
+    $lua = & $read 'EnableLUA'
+    if ($null -eq $lua -or $lua -ne 1) {
+        $bad = $true
+        $shown = if ($null -eq $lua) { 'missing' } else { "$lua" }
+        Write-Fail "[UAC] EnableLUA is $shown (it should be 1). This script does not change UAC"
+    }
+    $desktop = & $read 'PromptOnSecureDesktop'
+    if ($null -eq $desktop -or $desktop -ne 1) {
+        $bad = $true
+        $shown = if ($null -eq $desktop) { 'missing' } else { "$desktop" }
+        Write-Fail "[UAC] PromptOnSecureDesktop is $shown (it should be 1). This script does not change UAC"
+    }
+    $consent = & $read 'ConsentPromptBehaviorAdmin'
+    if ($consent -eq 0) {
+        $bad = $true
+        Write-Fail '[UAC] ConsentPromptBehaviorAdmin is 0, so an administrator elevates without a prompt. This script does not change UAC'
+    }
+    if (-not $bad) {
+        Write-Host '  [UAC] On, with a prompt on the secure desktop' -ForegroundColor Green
+    }
+}
+
+# Report only. Do not enable encryption and do not create a recovery key.
+# WMI, not the BitLocker module: Windows Home has device encryption and does
+# not have Get-BitLockerVolume. ProtectionStatus 1 with conversion 1 (encrypted)
+# or 2 (encryption in progress) is protected.
+function Test-DriveEncryption {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking Device Encryption' '.'
+
+    $vols = @()
+    try {
+        $vols = @(Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftVolumeEncryption' -ClassName 'Win32_EncryptableVolume' -ErrorAction Stop)
+    } catch {
+        Write-Fail "[BitLocker] Couldn't check device encryption: $($_.Exception.Message)"
+        return
+    }
+    $want = $env:SystemDrive.TrimEnd('\').ToUpperInvariant()
+    $matchLetter = {
+        param($Letter)
+        $letter = "$Letter".Trim().TrimEnd('\').ToUpperInvariant()
+        $letter -and ($letter -eq $want -or "${letter}:" -eq $want)
+    }
+    $sys = @($vols | Where-Object { & $matchLetter $_.DriveLetter })
+    # Some PCs leave DriveLetter blank on Win32_EncryptableVolume. The volume id
+    # matches Win32_Volume, which does have the drive letter.
+    if ($sys.Count -eq 0) {
+        $ids = @(Get-CimInstance -ClassName Win32_Volume -ErrorAction SilentlyContinue | Where-Object {
+            (& $matchLetter $_.DriveLetter) -or (& $matchLetter $_.Name)
+        } | ForEach-Object { "$($_.DeviceID)".TrimEnd('\').ToUpperInvariant() })
+        $sys = @($vols | Where-Object { $ids -contains "$($_.DeviceID)".TrimEnd('\').ToUpperInvariant() })
+    }
+    if ($sys.Count -eq 0) {
+        Write-Fail "[BitLocker] Couldn't find an encryptable volume for $want. Turn on device encryption or BitLocker and save the recovery key. This script does not turn encryption on"
+        return
+    }
+    foreach ($vol in $sys) {
+        try {
+            $protResult = Invoke-CimMethod -InputObject $vol -MethodName 'GetProtectionStatus' -ErrorAction Stop
+            $convResult = Invoke-CimMethod -InputObject $vol -MethodName 'GetConversionStatus' -ErrorAction Stop
+        } catch {
+            Write-Fail "[BitLocker] Couldn't read encryption status for ${want}: $($_.Exception.Message)"
+            continue
+        }
+        if ([int]$protResult.ReturnValue -ne 0 -or [int]$convResult.ReturnValue -ne 0) {
+            Write-Fail "[BitLocker] Couldn't read encryption status for $want (protection result $($protResult.ReturnValue), conversion result $($convResult.ReturnValue))"
+            continue
+        }
+        $prot = [int]$protResult.ProtectionStatus
+        $conv = [int]$convResult.ConversionStatus
+        # 1 = protected. Conversion 1 = fully encrypted, 2 = encryption in progress.
+        if ($prot -eq 1 -and ($conv -eq 1 -or $conv -eq 2)) {
+            $words = if ($conv -eq 2) { 'encryption in progress' } else { 'encrypted' }
+            Write-Host "  [BitLocker] $want is protected ($words)" -ForegroundColor Green
+        } else {
+            Write-Fail "[BitLocker] $want is not protected (protection status $prot, conversion status $conv). Turn on device encryption or BitLocker and save the recovery key. This script does not turn encryption on"
+        }
+    }
+}
+
+# HealthStatus only. Unknown is an empty card reader or a disk Windows
+# couldn't ask; that is not a failed disk. This is separate from chkdsk.
+function Test-DiskHealth {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking Disk Health' '.'
+
+    try {
+        $disks = @(Get-PhysicalDisk -ErrorAction Stop)
+    } catch {
+        Write-Fail "[Disk] Couldn't check disk health: $($_.Exception.Message)"
+        return
+    }
+    if ($disks.Count -eq 0) {
+        Write-Fail "[Disk] Get-PhysicalDisk returned no disks, so disk health couldn't be checked"
+        return
+    }
+    $bad = @($disks | Where-Object { "$($_.HealthStatus)" -in 'Unhealthy', 'Warning' })
+    foreach ($d in $bad) {
+        $name = if ("$($d.FriendlyName)".Trim()) { "$($d.FriendlyName)".Trim() } else { "$($d.DeviceId)" }
+        Write-Fail "[Disk] $name is $($d.HealthStatus)"
+    }
+    if ($bad.Count -eq 0) {
+        Write-Host "  [Disk] $($disks.Count) disk(s): health is fine. A status of Unknown, such as an empty card reader, is left alone" -ForegroundColor Green
+    }
+}
+
+# Short file on the Desktop, replaced every run. Not opened: a clean run
+# should not pop a window, and failures are already in the summary. The
+# reboot popup is separate and only appears when a restart is actually needed.
+function Save-RunStatus {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add("dailyrunme status for $env:COMPUTERNAME")
+    $lines.Add((Get-Date -Format 'yyyy-MM-dd HH:mm'))
+    $lines.Add('')
+    if ($script:Failures.Count -gt 0 -or $script:RestartReasons.Count -gt 0) {
+        $lines.Add('Needs attention')
+    } else {
+        $lines.Add('All clear')
+    }
+    if ($script:Failures.Count -gt 0) {
+        $lines.Add('')
+        foreach ($f in $script:Failures) { $lines.Add("FAIL: $f") }
+    }
+    if ($script:Notes.Count -gt 0) {
+        $lines.Add('')
+        foreach ($n in $script:Notes) { $lines.Add("NOTE: $n") }
+    }
+    if ($script:RestartReasons.Count -gt 0) {
+        $lines.Add('')
+        $lines.Add('A restart is needed:')
+        foreach ($r in $script:RestartReasons) { $lines.Add("- $r") }
+    }
+    $lines.Add('')
+    $lines.Add("Log: $transcript")
+
+    $path = Join-Path ([Environment]::GetFolderPath('Desktop')) 'dailyrunme status.txt'
+    try {
+        Set-Content -LiteralPath $path -Value $lines -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # Controlled folder access blocks PowerShell writing to the Desktop
+        $fallback = Join-Path $LogDir 'dailyrunme status.txt'
+        Write-Host "  Couldn't write $path ($($_.Exception.Message)); using $fallback" -ForegroundColor Yellow
+        $path = $fallback
+        try {
+            Set-Content -LiteralPath $path -Value $lines -Encoding UTF8 -ErrorAction Stop
+        } catch {
+            Write-Fail "[Status] Couldn't write ${path}: $($_.Exception.Message)"
+            return
+        }
+    }
+    $script:StatusFile = $path
+    Write-Host "  Status: $path" -ForegroundColor Green
 }
 
 # ---------------------------------------------------------------
@@ -3322,25 +4116,33 @@ try {
 
 try {
     Write-Banner 'dailyrunme' '#' Cyan
-    # Signatures first, so everything after runs with Defender up to date
+    # Signatures first, so everything after runs with Defender up to date.
+    # The restore point is next, before any setting changes.
     Invoke-Step 'patchmssigs' { Update-DefenderSignature }
+    Invoke-Step 'restorepoint' { New-DailyRestorePoint }
 
     # Hardening, before anything is installed
     Invoke-Step 'cis-chrome' { Set-ChromeHardening }
     Invoke-Step 'cis-services' { Disable-UnneededService }
+    Invoke-Step 'quickassist' { Remove-QuickAssist }
+    Invoke-Step 'smb1' { Remove-SmbV1 }
     Invoke-Step 'cis-registry' { Set-SecurityRegistry }
     Invoke-Step 'dns' { Set-SecureDns }
     Invoke-Step 'hostsfile' { Repair-HostsFile }
     Invoke-Step 'scriptprotect' { Set-ScriptProtection }
     Invoke-Step 'cis-office' { Set-OfficeHardening }
+    Invoke-Step 'firewall' { Enable-FirewallProfile }
     Invoke-Step 'lnkprotect' { Set-ShortcutProtection }
     Invoke-Step 'explorerview' { Set-ExplorerView }
+    Invoke-Step 'autoplay' { Disable-AutoPlay }
     Invoke-Step 'dep' { Enable-Dep }
     Invoke-Step 'coreisolation' { Set-CoreIsolation }
     Invoke-Step 'devmode' { Disable-DeveloperMode }
     Invoke-Step 'defendersettings' { Set-DefenderSetting }
+    Invoke-Step 'defenderexclusions' { Test-DefenderExclusion }
 
-    # Updates, the background scan, then the checks
+    # Updates, then the checks. The Defender scan starts after them so it is
+    # not reading the disk during DISM, sfc, or chkdsk.
     Invoke-Step 'patchwindows' { Update-Windows }
     Invoke-Step 'patchoffice' { Update-Office }
     Invoke-Step 'patchchoco' { Update-ChocolateyPackage }
@@ -3348,14 +4150,18 @@ try {
     Invoke-Step 'patchwinget' { Update-WingetPackage }
     Invoke-Step 'msert' { Start-SafetyScan }
     Invoke-Step 'eekscan' { Start-EmsisoftScan }
-    Invoke-Step 'mywinvscan' { Start-DefenderScan }
+    Invoke-Step 'remoteaccess' { Test-RemoteAccess }
+    Invoke-Step 'uac' { Test-UacSetting }
+    Invoke-Step 'bitlocker' { Test-DriveEncryption }
+    Invoke-Step 'diskhealth' { Test-DiskHealth }
     Invoke-Step 'winhealthcheck' { Test-WindowsHealth }
     Invoke-Step 'windiskcheck' { Test-SystemDisk }
     Invoke-Step 'mywinprocsigs' { Find-UnsignedProcess; Find-LolbasCopy }
     Invoke-Step 'winstartupcheck' { Test-StartupEntry }
     Invoke-Step 'winmodcheck' { Test-DriverSignature }
+    Invoke-Step 'mywinvscan' { Start-DefenderScan }
 
-    # Last, so it includes anything the steps above set off
+    # Last of the checks, so it includes anything the steps above set off
     Invoke-Step 'protectionhistory' { Save-ProtectionHistory }
 
     # Kept, unlike the transcripts: the first run's file is the only record of
@@ -3368,12 +4174,19 @@ try {
         Write-Fail "Couldn't write the registry undo file: $($_.Exception.Message)"
     }
 
+    # After the undo file, so a failure writing it is in the status file too
+    Invoke-Step 'statusfile' { Save-RunStatus }
+
     Write-Banner 'dailyrunme summary' '#' Cyan
     foreach ($n in $script:Notes) { Write-Host "NOTE: $n" -ForegroundColor Yellow }
     foreach ($f in $script:Failures) { Write-Host "FAIL: $f" -ForegroundColor Red }
     if ($script:Failures.Count -eq 0) { Write-Host 'All steps finished' -ForegroundColor Green }
-    Write-Host 'Restart Chrome for its policies (or chrome://policy > Reload policies), and'
-    Write-Host 'restart Windows to finish service, DEP and PowerShell 2.0 changes.'
+    Write-Host 'Restart Chrome for its policies (or chrome://policy > Reload policies).'
+    if ($script:RestartReasons.Count -gt 0) {
+        Write-Host 'A restart is needed:'
+        foreach ($r in $script:RestartReasons) { Write-Host "  $r" -ForegroundColor Yellow }
+    }
+    if ($script:StatusFile) { Write-Host "Status: $script:StatusFile" }
     if ($script:HistoryFile) { Write-Host "Protection history: $script:HistoryFile" }
     if ($script:EekLog) { Write-Host "Emsisoft found malware; its log: $script:EekLog" -ForegroundColor Red }
     if ($undoFile) {
@@ -3395,6 +4208,36 @@ if ($script:HistoryFile) {
 }
 if ($script:EekLog) {
     Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$script:EekLog`""
+}
+
+# After Notepad starts, so this window is the one in front. Only when something
+# this run changed, or Windows Update, is actually waiting on a restart.
+# The script does not restart the PC.
+if ($script:RestartReasons.Count -gt 0) {
+    $popup = "A restart is needed.`r`n`r`n" + ($script:RestartReasons -join "`r`n")
+    $shown = $false
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        if ([Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+            [void][System.Windows.Forms.MessageBox]::Show(
+                $popup,
+                'dailyrunme',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            $shown = $true
+        }
+    } catch {
+        $shown = $false
+    }
+    if (-not $shown) {
+        $msg = "A restart is needed. " + ($script:RestartReasons -join ' ')
+        if ($msg.Length -gt 240) { $msg = $msg.Substring(0, 240) }
+        $msgCmd = Get-Command msg.exe -ErrorAction SilentlyContinue
+        if ($msgCmd) { & $msgCmd.Source $env:USERNAME /TIME:120 $msg | Out-Null }
+        if (-not $msgCmd -or $LASTEXITCODE -ne 0) {
+            Write-Host 'A restart is needed. The popup could not be shown; the reasons are in the summary and the status file.' -ForegroundColor Yellow
+        }
+    }
 }
 
 if ($script:Failures.Count -gt 0) { exit 1 }
