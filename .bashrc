@@ -1,4 +1,4 @@
-# 20261030 Kirby
+# 20261102 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -1980,6 +1980,7 @@ function mysysinfo()
     local memtotal memavail swaptotal swapused dfopt ro l1 l5 l15 sys n v ext
     local reg='/proc/registry/HKEY_LOCAL_MACHINE/SOFTWARE/Microsoft/Windows NT/CurrentVersion'
     local -a info words
+    local -x IFS=$' \t\n'
 
     #printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '-'
     mkbanner "SYSTEM INFO" '=' yellow

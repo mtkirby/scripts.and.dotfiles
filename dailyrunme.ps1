@@ -1,6 +1,6 @@
 <#
 .VERSION
-    2026-11-01
+    2026-11-02
 
 .SYNOPSIS
     Daily Windows run: security hardening, updates, a background Defender scan,
@@ -48,9 +48,14 @@
                           protection and the vulnerable driver blocklist on,
                           and checked that they're running
        - devmode:         alert if Developer Mode is on, and turn it off
+       - exploitprotect:  Exploit protection system settings back to
+                          "Use default", alerting on any that were turned off
        - defendersettings: real-time, cloud, sample submission, potentially
                           unwanted apps, network protection, Dev Drive,
                           Controlled folder access; checks Tamper protection
+       - reputation:      App & browser control > Reputation-based protection:
+                          SmartScreen (warn and prevent bypass), Edge
+                          SmartScreen, phishing protection, Store apps
        - defenderexclusions: fails if Defender has an exclusion, or a Controlled
                           folder access app, that is not on the approved lists
     4. Updates:
@@ -2252,6 +2257,90 @@ function Disable-DeveloperMode {
 }
 
 # ---------------------------------------------------------------
+# SECTION 9d: Exploit protection system settings at their defaults (not CIS)
+# Windows Security > App & browser control > Exploit protection > System
+# settings. Each shows "Use default", which is:
+#   Control flow guard (CFG)                     on
+#   Data Execution Prevention (DEP)              on
+#   Force randomization for images (Mandatory ASLR)  off
+#   Randomize memory allocations (Bottom-up ASLR)    on
+#   High-entropy ASLR                            on
+#   Validate exception chains (SEHOP)            on
+#   Validate heap integrity                      on
+# Turning one off weakens every program on the PC, which malware or a
+# "game booster" may do. Turning Mandatory ASLR on breaks some older programs.
+# If any system setting (including ones the page doesn't show, and audit
+# settings) isn't "Use default", all are reset to it. One that was off is
+# reported as a failure; one that was on is just reset. Needs a restart.
+# Program settings (per-program overrides) aren't changed: Windows and some
+# programs' installers add their own, and there's no list of Windows' own to
+# reset them to.
+# ---------------------------------------------------------------
+function Reset-ExploitProtection {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Checking Exploit Protection System Settings' '.'
+
+    if (-not (Get-Command Get-ProcessMitigation -ErrorAction SilentlyContinue)) {
+        Write-Fail '[Exploit protection] The ProcessMitigations PowerShell module is missing; settings not checked'
+        return
+    }
+    $labels = @{
+        'CFG.Enable'               = 'Control flow guard (CFG)'
+        'DEP.Enable'               = 'Data Execution Prevention (DEP)'
+        'ASLR.ForceRelocateImages' = 'Force randomization for images (Mandatory ASLR)'
+        'ASLR.BottomUp'            = 'Randomize memory allocations (Bottom-up ASLR)'
+        'ASLR.HighEntropy'         = 'High-entropy ASLR'
+        'SEHOP.Enable'             = 'Validate exception chains (SEHOP)'
+        'Heap.TerminateOnError'    = 'Validate heap integrity'
+    }
+    # Every system setting that's ON or OFF rather than NOTSET ("Use default"),
+    # as Group.Setting
+    $read = {
+        $system = Get-ProcessMitigation -System
+        foreach ($group in $system.PSObject.Properties) {
+            $v = $group.Value
+            if ($null -eq $v -or $v -is [string] -or $v.GetType().IsPrimitive -or $v.GetType().IsEnum) { continue }
+            foreach ($p in $v.PSObject.Properties) {
+                $state = "$($p.Value)"
+                if ($state -eq 'ON' -or $state -eq 'OFF') {
+                    $id = "$($group.Name).$($p.Name)"
+                    $label = if ($labels.ContainsKey($id)) { $labels[$id] } else { $id }
+                    [pscustomobject]@{ Label = $label; State = $state }
+                }
+            }
+        }
+    }
+
+    $changed = @(& $read)
+    if ($changed.Count -eq 0) {
+        Write-Host '  [Exploit protection] All system settings: Use default' -ForegroundColor Green
+        return
+    }
+
+    # Where Windows keeps them, for the undo file
+    $kernel = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel'
+    $before = @{}
+    foreach ($n in 'MitigationOptions', 'MitigationAuditOptions') { $before[$n] = Get-RegistryValueState -Path $kernel -Name $n }
+    Set-ProcessMitigation -System -Reset
+    foreach ($n in $before.Keys) { Add-RegistryUndo -Path $kernel -Name $n -Before $before[$n] }
+
+    $left = @(& $read | ForEach-Object { $_.Label })
+    foreach ($c in $changed) {
+        $was = if ($c.State -eq 'OFF') { 'was turned off' } else { 'was on' }
+        if ($left -contains $c.Label) {
+            Write-Fail "[Exploit protection] $($c.Label) $was, and resetting it to Use default didn't stick (a policy may be holding it)"
+        } elseif ($c.State -eq 'OFF') {
+            Write-Fail "[Exploit protection] $($c.Label) $was; set back to Use default. If you didn't turn it off, find out what did"
+        } else {
+            Write-Host "  [Exploit protection] $($c.Label) $was; set back to Use default" -ForegroundColor Yellow
+        }
+    }
+    $script:Notes.Add('Restart Windows to apply the Exploit protection system settings')
+}
+
+# ---------------------------------------------------------------
 # SECTION 10: Microsoft Defender Antivirus settings
 # The switches in Windows Security > Virus & threat protection > Manage
 # settings. Each is read back afterwards: a setting that didn't stick was
@@ -2387,6 +2476,91 @@ function Set-DefenderSetting {
         } else {
             Write-Fail "[Defender] Tamper protection is off; turn it on in Windows Security > Virus & threat protection > Manage settings (opened for you)"
             Start-Process 'windowsdefender://threatsettings' -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# ---------------------------------------------------------------
+# SECTION 10b: Reputation-based protection (CIS, where it has them)
+# The switches in Windows Security > App & browser control > Reputation-based
+# protection, set as policies so the switches are locked on ("managed by your
+# organization"). Potentially unwanted app blocking's "Block apps" switch is
+# Defender's PUA protection, set in Section 10.
+#   Check apps and files - SmartScreen checks programs and files downloaded
+#     from the internet against Microsoft's list of known good and bad
+#     software. Set to "Warn and prevent bypass": a flagged or unknown
+#     download has no "Run anyway" button. To run one you trust: right-click
+#     it > Properties > tick Unblock > OK, or Unblock-File <path>.
+#   SmartScreen for Microsoft Edge - the same checks for sites and downloads
+#     in Edge, with no way to click past a warning. Windows still opens some
+#     links in Edge whatever the default browser is.
+#   Phishing protection - warns when your Windows password is typed into a
+#     phishing site or app, reused on a website, or saved in Notepad, Word or
+#     WordPad. Only works when you sign in to Windows with a password, not a
+#     PIN or Windows Hello.
+#   Potentially unwanted app blocking, Block downloads - Edge blocks
+#     downloads of adware and bundleware.
+#   SmartScreen for Microsoft Store apps - checks the web content Store apps
+#     load. A per-user setting, so it's set for every account.
+# A setting that was there but off is reported as a failure, in case
+# something other than you turned it off; one that wasn't there yet (the
+# Windows default) is just turned on.
+# ---------------------------------------------------------------
+function Set-ReputationProtection {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Applying Reputation-based Protection' '.'
+
+    # Sets one value, reports it, and says whether it was already right
+    $apply = {
+        param($label, $path, $name, $value, $type)
+        $same = { param($s) $s -and $s.Kind -eq $type -and "$($s.Data)" -eq "$value" }
+        $before = Get-RegistryValueState -Path $path -Name $name
+        if (& $same $before) {
+            Write-Host "  [Reputation] $label`: on" -ForegroundColor Green
+            return
+        }
+        Set-TrackedValue -Path $path -Name $name -Value $value -Type $type
+        if (-not (& $same (Get-RegistryValueState -Path $path -Name $name))) {
+            Write-Fail "[Reputation] ${label}: couldn't turn it on ($path $name)"
+        } elseif ($before) {
+            Write-Fail "[Reputation] ${label}: was off ($name = $($before.Data)); turned back on. If you didn't turn it off, find out what did"
+        } else {
+            Write-Host "  [Reputation] $label`: turned on" -ForegroundColor Green
+        }
+    }
+
+    # Check apps and files. ShellSmartScreenLevel Block = warn and prevent
+    # bypass; Warn would keep "Run anyway".
+    $system = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    & $apply 'Check apps and files' $system 'EnableSmartScreen' 1 'DWord'
+    & $apply 'Check apps and files: warn and prevent bypass' $system 'ShellSmartScreenLevel' 'Block' 'String'
+
+    # Microsoft Edge (restart Edge to apply). The two Prevent... policies
+    # remove the option to continue past a warning for sites and downloads.
+    $edge = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+    & $apply 'SmartScreen for Microsoft Edge' $edge 'SmartScreenEnabled' 1 'DWord'
+    & $apply 'SmartScreen for Microsoft Edge: no bypass for sites' $edge 'PreventSmartScreenPromptOverride' 1 'DWord'
+    & $apply 'SmartScreen for Microsoft Edge: no bypass for downloads' $edge 'PreventSmartScreenPromptOverrideForFiles' 1 'DWord'
+    & $apply 'Potentially unwanted app blocking: block downloads' $edge 'SmartScreenPuaEnabled' 1 'DWord'
+
+    # Phishing protection (Enhanced Phishing Protection, Windows 11 22H2 and
+    # later). The "collect content for analysis" option isn't set: it sends
+    # screenshots of the page or app to Microsoft.
+    $wtds = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WTDS\Components'
+    & $apply 'Phishing protection' $wtds 'ServiceEnabled' 1 'DWord'
+    & $apply 'Phishing protection: warn about malicious apps and sites' $wtds 'NotifyMalicious' 1 'DWord'
+    & $apply 'Phishing protection: warn about password reuse' $wtds 'NotifyPasswordReuse' 1 'DWord'
+    & $apply 'Phishing protection: warn about unsafe password storage' $wtds 'NotifyUnsafeApp' 1 'DWord'
+
+    # SmartScreen for Microsoft Store apps, per user
+    Invoke-InEachUserHive {
+        param($root, $label)
+        try {
+            & $apply "SmartScreen for Microsoft Store apps ($label)" "$root\Software\Microsoft\Windows\CurrentVersion\AppHost" 'EnableWebContentEvaluation' 1 'DWord'
+        } catch {
+            Write-Fail "[Reputation] ${label}: couldn't turn on SmartScreen for Microsoft Store apps: $($_.Exception.Message)"
         }
     }
 }
@@ -4138,7 +4312,9 @@ try {
     Invoke-Step 'dep' { Enable-Dep }
     Invoke-Step 'coreisolation' { Set-CoreIsolation }
     Invoke-Step 'devmode' { Disable-DeveloperMode }
+    Invoke-Step 'exploitprotect' { Reset-ExploitProtection }
     Invoke-Step 'defendersettings' { Set-DefenderSetting }
+    Invoke-Step 'reputation' { Set-ReputationProtection }
     Invoke-Step 'defenderexclusions' { Test-DefenderExclusion }
 
     # Updates, then the checks. The Defender scan starts after them so it is
