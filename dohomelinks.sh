@@ -42,7 +42,7 @@ for file in \
     .psqlrc \
     .screenrc \
     .vimrc \
-    pythonrc.py
+    .pythonrc.py
 do
     if [[ ! -e "$repodir/$file" ]]
     then

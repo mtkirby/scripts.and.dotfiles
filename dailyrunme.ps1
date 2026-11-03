@@ -1,6 +1,6 @@
 <#
 .VERSION
-    2026-11-02
+    2026-11-03
 
 .SYNOPSIS
     Daily Windows run: security hardening, updates, a background Defender scan,
@@ -40,8 +40,10 @@
                           on, and that is a failure so it stays visible
        - lnkprotect:      shortcut extensions shown, mshta/regsvr32/certutil
                           firewalled, .hta opens in Notepad
-       - explorerview:    File Explorer shows extensions, hidden and system
-                          files, and the full path in the title bar
+       - explorerview:    File Explorer shows extensions, hidden files (not
+                          protected operating system files) and the full path
+                          in the title bar; End task on the taskbar's
+                          right-click menu
        - autoplay:        AutoPlay and AutoRun off for the PC and every user
        - dep:             Data Execution Prevention for all programs
        - coreisolation:   memory integrity, kernel stack protection, LSA
@@ -2018,14 +2020,21 @@ function Set-ShortcutProtection {
 #     a PDF. Section 8 sets this too.
 #   Show hidden files (Hidden = 1; 2 hides them), so malware that marks its
 #     files hidden can't hide from you in Explorer.
-#   Show protected operating system files (ShowSuperHidden = 1), files marked
-#     both hidden and system. Malware uses that combination too. Windows' own
-#     files show as well, faded, e.g. a desktop.ini on the Desktop and in
-#     many folders; leave them alone.
+#   Protected operating system files stay hidden (ShowSuperHidden = 0):
+#     files marked both hidden and system. Showing them (1) would also show
+#     Windows' own, faded, e.g. a desktop.ini on the Desktop and in many
+#     folders. Malware uses that combination too, so to look for it, set 1
+#     on the commented-out line below, or untick "Hide protected operating
+#     system files" in Folder Options > View for a while.
 #   Full path in the title bar (CabinetState\FullPath = 1). On Windows 11
 #     the path shows in the tab's name.
-# Takes effect when Explorer next starts: sign out and in, or restart
-# "Windows Explorer" in Task Manager.
+#   End task on the taskbar (Advanced\TaskbarDeveloperSettings\
+#     TaskbarEndTask = 1): right-click an app on the taskbar > End task
+#     force-closes it, like Task Manager, for a frozen app. Settings >
+#     System > For developers > End task; separate from Developer Mode,
+#     which Section 9c keeps off. Shows straight away.
+# The others take effect when Explorer next starts: sign out and in, or
+# restart "Windows Explorer" in Task Manager.
 # ---------------------------------------------------------------
 function Set-ExplorerView {
     Set-StrictMode -Version Latest
@@ -2040,6 +2049,7 @@ function Set-ExplorerView {
         #@{ Key = 'Advanced'; Name = 'ShowSuperHidden'; Value = 1; What = 'protected operating system files shown' }
         @{ Key = 'Advanced'; Name = 'ShowSuperHidden'; Value = 0; What = 'protected operating system files NOT shown' }
         @{ Key = 'CabinetState'; Name = 'FullPath'; Value = 1; What = 'full path in the title bar' }
+        @{ Key = 'Advanced\TaskbarDeveloperSettings'; Name = 'TaskbarEndTask'; Value = 1; What = 'End task on the taskbar' }
     )
     Invoke-InEachUserHive {
         param($root, $label)
