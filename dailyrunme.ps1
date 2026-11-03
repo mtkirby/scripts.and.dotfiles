@@ -32,7 +32,7 @@
        - dns:             Quad9 / OpenDNS with DNS over HTTPS preferred
        - hostsfile:       hosts file put back to the default plus approved
                           entries, with its location and permissions checked
-       - scriptprotect:   Defender ASR rules, no Win+R, PowerShell logging,
+       - scriptprotect:   Defender ASR rules, PowerShell logging,
                           PowerShell 2.0 removed, Windows Script Host off
        - cis-office:      Microsoft Office (CIS Microsoft Office Enterprise
                           Benchmark v1.2.0, Level 1) for every user account
@@ -73,9 +73,11 @@
                           update scan
        - patchwinget:     winget upgrade --all
     5. msert:             Microsoft Safety Scanner, downloaded fresh, detect only:
-                          a full scan on Sundays, a quick scan otherwise
+                          a full scan on Sundays and with -FullScan, a quick
+                          scan otherwise
        eekscan:           if C:\EEK exists, Emsisoft Emergency Kit, updated,
-                          detect only: a full scan on Saturdays, quick otherwise
+                          detect only: a full scan on Saturdays and with
+                          -FullScan, quick otherwise
     6. Checks. These report only; they do not turn remote access off, change
        UAC, or turn encryption on:
        - remoteaccess:    fails if Remote Desktop, Remote Assistance or WinRM
@@ -100,11 +102,21 @@
                           background. After the checks, so it is not reading the
                           disk during DISM, sfc, or chkdsk
     8. protectionhistory: the last 7 days of Defender's Protection history,
-                          written to the Desktop and opened in Notepad at the end
-    9. statusfile:        dailyrunme status.txt on the Desktop, every run:
-                          All clear, or Needs attention with the failures, notes
-                          and restart reasons. Not opened. If Controlled folder
-                          access blocks the Desktop, it goes in the log folder.
+                          written to the log folder
+    9. statusfile:        "PC check report.txt" on the Desktop, every run: All
+                          clear, or Needs attention with the failures, notes and
+                          restart reasons, then the Protection history. Opened
+                          in Notepad at the end. If Controlled folder access
+                          blocks the Desktop, it goes in the log folder.
+    Then a message in plain words: no problems, or how many and who to send the
+    report to ($HelperContact at the top), and Yes/No to restart when a restart
+    is actually needed.
+
+    For someone who isn't technical: run install-dailyrunme.cmd once on their
+    PC, signed in as them (their account must be an administrator). It copies
+    the script to C:\Program Files\dailyrunme, schedules it for Fridays at 23:00
+    with full scans, and puts "Check and update this PC" on their Desktop, which
+    runs it with no permission prompt. See Install-DailyRunMe.
 
     Any run that changes registry values (including service startup types)
     writes registry-undo-<date>-<time>.reg to the log folder, with those values
@@ -120,21 +132,34 @@
     Where the transcript, the Defender scan log and the registry undo files go.
     Transcripts older than 30 days are deleted; undo files are kept.
 
+.PARAMETER FullScan
+    Full Safety Scanner and Emsisoft scans whatever the day. The weekly
+    scheduled run uses it.
+
+.PARAMETER Install
+    Set up the weekly run and the Desktop shortcut for the signed-in user, then
+    stop. install-dailyrunme.cmd runs this.
+
+.PARAMETER Uninstall
+    Remove the scheduled tasks, the Desktop shortcut and the copy in Program
+    Files. Settings already applied, logs and undo files stay.
+
 .NOTES
     - Must be run as Administrator. Run it as yourself, not SYSTEM: winget only works
       in a user session, and the report goes to your Desktop.
     - Windows blocks scripts by default, so start it with -ExecutionPolicy Bypass.
     - Exit code 1 if any step failed; the summary at the end lists them.
     - Restart Chrome after the first run (or reload policies at chrome://policy).
-      This script never restarts the PC. When a restart is actually needed, it
-      says so in a popup, in the summary, and in the Desktop status file.
+      The PC restarts only if Yes is clicked in the message at the end, which
+      offers it only when a restart is actually needed. The reasons are also in
+      the summary and the Desktop report.
     - Chrome policies need Chrome to read HKLM\SOFTWARE\Policies\Google\Chrome;
       check them at chrome://policy.
     - Hardening targets a stand-alone PC. On a domain, use Group Policy instead.
     - Not a complete CIS implementation: many recommendations are manual or
       environment-specific. Back up the system before the first run.
-    - To run it every day at 03:00 (only while you are logged on):
-      schtasks /Create /TN dailyrunme /SC DAILY /ST 03:00 /RL HIGHEST /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\path\to\dailyrunme.ps1"
+    - To run it on a schedule, use install-dailyrunme.cmd (see above). To
+      change the time: Task Scheduler > dailyrunme > Weekly > Triggers.
 
 .EXAMPLE
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\dailyrunme.ps1
@@ -143,7 +168,13 @@
 #Requires -RunAsAdministrator
 
 param(
-    [string]$LogDir = (Join-Path $env:ProgramData 'dailyrunme')
+    [string]$LogDir = (Join-Path $env:ProgramData 'dailyrunme'),
+    # Full Safety Scanner and Emsisoft scans whatever the day (the weekly run)
+    [switch]$FullScan,
+    # Set up, or remove, the weekly run and the Desktop shortcut (see
+    # install-dailyrunme.cmd); nothing else runs
+    [switch]$Install,
+    [switch]$Uninstall
 )
 
 # Not 'Stop': in Windows PowerShell, a native program's stderr line would then end
@@ -246,6 +277,13 @@ $ApprovedHostsEntries = @(
 )
 
 # ---------------------------------------------------------------
+# Who to send the report to when a run finds problems, as the person using
+# this PC should see it in the popup at the end, e.g. 'Mike (555-0123)'.
+# Empty: "the person who set up this PC".
+# ---------------------------------------------------------------
+$HelperContact = ''
+
+# ---------------------------------------------------------------
 # Defender exclusions: EDIT THIS LIST
 # Anything Defender excludes that is not listed here is a failure, so an
 # exclusion added by malware or by an installer shows up in the summary.
@@ -285,6 +323,11 @@ function Write-Fail {
     param([Parameter(Mandatory)][string]$Message)
     Write-Host "FAIL: $Message" -ForegroundColor Red
     $script:Failures.Add("${script:Step}: $Message")
+}
+
+# Who the report goes to, for the report and the popup ($HelperContact)
+function Get-HelperName {
+    if ("$HelperContact".Trim()) { "$HelperContact".Trim() } else { 'the person who set up this PC' }
 }
 
 # One place for "a restart is needed", so the summary, the Desktop status file
@@ -1411,14 +1454,16 @@ function Set-ScriptProtection {
         }
     }
 
-    # Disable the Run dialog (Win+R) for every user
-    # Win+R is the step most of these tricks ask for. The Run entry also goes from
-    # the Start button's right-click menu. Takes effect at next sign-in.
-    # Terminal (Win+X), the Start menu search box and File Explorer's address
-    # bar can still run commands, and newer variants of the trick use them, so
-    # this cuts the risk without removing it.
+    # The Run dialog (Win+R) is left on. Earlier versions of this script turned
+    # it off with the NoRun policy, which also stops File Explorer opening a
+    # typed path such as C:\ProgramData ("restrictions in effect on this
+    # computer"). That policy is removed here; the ASR rules above and script
+    # block logging below cover the same tricks.
     $explorerPolicy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
-    Set-RegistryValue -Path $explorerPolicy -Name 'NoRun' -Value 1 -Description 'Disable the Run dialog (Win+R)'
+    if (Get-RegistryValueState -Path $explorerPolicy -Name 'NoRun') {
+        Remove-TrackedValue -Path $explorerPolicy -Name 'NoRun'
+        Write-Host '  [Registry] NoRun removed: the Run dialog and typed paths in File Explorer work again (after sign-out or an Explorer restart)' -ForegroundColor Green
+    }
 
     # PowerShell Script Block Logging - Enabled (CIS)
     # Records the full text of every PowerShell command and script that runs,
@@ -2583,7 +2628,10 @@ function Save-ProtectionHistory {
 
     $historyDays = 7
     $historyMax = 1000
-    $script:HistoryFile = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Defender Protection History.txt'
+    # Kept in the log folder; the Desktop report (Save-RunStatus) includes it.
+    # Earlier versions wrote it to the Desktop.
+    $script:HistoryFile = Join-Path $LogDir 'Defender Protection History.txt'
+    Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Defender Protection History.txt') -ErrorAction SilentlyContinue
     $historyLog = 'Microsoft-Windows-Windows Defender/Operational'
     $historyEvents = @{
         1116 = 'Threat found'
@@ -2668,19 +2716,11 @@ function Save-ProtectionHistory {
     $report.Add("    Add-MpPreference -AttackSurfaceReductionOnlyExclusions 'C:\path\program.exe'")
 
     try {
-        Set-Content -Path $script:HistoryFile -Value $report -Encoding UTF8 -ErrorAction Stop
+        Set-Content -LiteralPath $script:HistoryFile -Value $report -Encoding UTF8 -ErrorAction Stop
     } catch {
-        # Controlled folder access (Section 10) blocks PowerShell writing to the Desktop
-        $fallback = Join-Path $LogDir 'Defender Protection History.txt'
-        Write-Host "  Couldn't write $script:HistoryFile ($($_.Exception.Message)); using $fallback" -ForegroundColor Yellow
-        $script:HistoryFile = $fallback
-        try {
-            Set-Content -Path $script:HistoryFile -Value $report -Encoding UTF8 -ErrorAction Stop
-        } catch {
-            Write-Fail "[History] Couldn't write ${script:HistoryFile}: $($_.Exception.Message)"
-            $script:HistoryFile = $null
-            return
-        }
+        Write-Fail "[History] Couldn't write ${script:HistoryFile}: $($_.Exception.Message)"
+        $script:HistoryFile = $null
+        return
     }
     Write-Host "  $historySummary; saved to $script:HistoryFile" -ForegroundColor Green
 }
@@ -3032,13 +3072,14 @@ function Update-WingetPackage {
 # still works if malware has disabled or damaged Defender. It expires 10 days after
 # download, so a fresh copy is downloaded every run (a few hundred MB), its
 # Microsoft signature checked before it runs, and deleted afterwards. Detect only
-# (/N): it reports, and Defender or you remove. A full scan on Sundays (can take
-# hours), otherwise a quick scan (minutes). msert.exe scans in its own process, so
+# (/N): it reports, and Defender or you remove. A full scan on Sundays and on the
+# weekly run (-FullScan; can take hours), otherwise a quick scan (minutes). msert.exe scans in its own process, so
 # unlike Defender it can run at below-normal priority. Runs before mywinvscan so
 # the two scans don't compete. Results come from this run's part of
 # %SystemRoot%\debug\msert.log, which Safety Scanner adds to each run.
 function Start-SafetyScan {
-    $full = (Get-Date).DayOfWeek -eq 'Sunday'
+    $full = $FullScan -or (Get-Date).DayOfWeek -eq 'Sunday'
+    $why = if ($FullScan) { 'weekly run' } else { 'Sunday' }
     $url = if ([Environment]::Is64BitOperatingSystem) { 'https://go.microsoft.com/fwlink/?LinkId=212732' } else { 'https://go.microsoft.com/fwlink/?LinkId=212733' }
     $dir = Join-Path $env:TEMP "msert-$PID"
     $exe = Join-Path $dir 'msert.exe'
@@ -3066,7 +3107,7 @@ function Start-SafetyScan {
         $before = [string](Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue)
         $opts = @('/Q', '/N')
         if ($full) { $opts += '/F' }
-        Write-Host "Running a $(if ($full) { 'full scan (Sunday; this can take hours)' } else { 'quick scan' }), detect only: msert.exe $($opts -join ' ')"
+        Write-Host "Running a $(if ($full) { "full scan ($why; this can take hours)" } else { 'quick scan' }), detect only: msert.exe $($opts -join ' ')"
         try {
             $p = Start-Process -FilePath $exe -ArgumentList $opts -WindowStyle Hidden -PassThru -ErrorAction Stop
         } catch {
@@ -3100,8 +3141,8 @@ function Start-SafetyScan {
 # engine from Defender's (Bitdefender's plus Emsisoft's own), so unlike the Safety
 # Scanner it's an independent second opinion. Runs only if C:\EEK exists (the kit
 # is portable: extract it there). Updates its signatures, then scans detect only
-# (no /quarantine or /delete): /full on Saturdays (can take hours), /quick
-# otherwise. Output goes to eek-scan.log in $LogDir, which opens in Notepad at the
+# (no /quarantine or /delete): /full on Saturdays and on the weekly run
+# (-FullScan; can take hours), /quick otherwise. Output goes to eek-scan.log in $LogDir, which opens in Notepad at the
 # end of the run if anything is found.
 # This runs as administrator, but a folder made at the root of C: can be changed
 # by the user who made it, so a2cmd.exe must be validly signed by Emsisoft, checked
@@ -3140,10 +3181,11 @@ function Start-EmsisoftScan {
         return
     }
 
-    $full = (Get-Date).DayOfWeek -eq 'Saturday'
+    $full = $FullScan -or (Get-Date).DayOfWeek -eq 'Saturday'
+    $why = if ($FullScan) { 'weekly run' } else { 'Saturday' }
     $scan = if ($full) { '/full' } else { '/quick' }
     $log = Join-Path $LogDir 'eek-scan.log'
-    Write-Banner "a2cmd $scan$(if ($full) { ' (Saturday; this can take hours)' })" '.'
+    Write-Banner "a2cmd $scan$(if ($full) { " ($why; this can take hours)" })" '.'
     # Shown as it runs, and kept for the result check and the log
     $out = @(& $a2cmd $scan 2>&1 | ForEach-Object {
         $line = "$_" -replace "`0", ''
@@ -4215,19 +4257,21 @@ function Test-DiskHealth {
     }
 }
 
-# Short file on the Desktop, replaced every run. Not opened: a clean run
-# should not pop a window, and failures are already in the summary. The
-# reboot popup is separate and only appears when a restart is actually needed.
+# "PC check report.txt" on the Desktop, replaced every run and opened in
+# Notepad at the end: the one file the person using the PC is asked to send
+# when there are problems. The run's result, then the Protection history.
 function Save-RunStatus {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add("dailyrunme status for $env:COMPUTERNAME")
+    $lines.Add("PC check report for $env:COMPUTERNAME (dailyrunme)")
     $lines.Add((Get-Date -Format 'yyyy-MM-dd HH:mm'))
     $lines.Add('')
-    if ($script:Failures.Count -gt 0 -or $script:RestartReasons.Count -gt 0) {
-        $lines.Add('Needs attention')
+    if ($script:Failures.Count -gt 0) {
+        $lines.Add("Needs attention: $($script:Failures.Count) problem(s). Please send this file to $(Get-HelperName).")
+    } elseif ($script:RestartReasons.Count -gt 0) {
+        $lines.Add('All clear, but a restart is needed (see below)')
     } else {
         $lines.Add('All clear')
     }
@@ -4246,13 +4290,21 @@ function Save-RunStatus {
     }
     $lines.Add('')
     $lines.Add("Log: $transcript")
+    if ($script:HistoryFile -and (Test-Path -LiteralPath $script:HistoryFile)) {
+        $lines.Add('')
+        $lines.Add('=' * 72)
+        foreach ($l in Get-Content -LiteralPath $script:HistoryFile) { $lines.Add($l) }
+    }
 
-    $path = Join-Path ([Environment]::GetFolderPath('Desktop')) 'dailyrunme status.txt'
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    # Earlier versions' name for it
+    Remove-Item -LiteralPath (Join-Path $desktop 'dailyrunme status.txt') -ErrorAction SilentlyContinue
+    $path = Join-Path $desktop 'PC check report.txt'
     try {
         Set-Content -LiteralPath $path -Value $lines -Encoding UTF8 -ErrorAction Stop
     } catch {
         # Controlled folder access blocks PowerShell writing to the Desktop
-        $fallback = Join-Path $LogDir 'dailyrunme status.txt'
+        $fallback = Join-Path $LogDir 'PC check report.txt'
         Write-Host "  Couldn't write $path ($($_.Exception.Message)); using $fallback" -ForegroundColor Yellow
         $path = $fallback
         try {
@@ -4267,8 +4319,150 @@ function Save-RunStatus {
 }
 
 # ---------------------------------------------------------------
+# -Install and -Uninstall (run by install-dailyrunme.cmd)
+# Sets it up for whoever is signed in at the screen, who must be an
+# administrator:
+#   - a copy of this script in C:\Program Files\dailyrunme, where only
+#     administrators can change it. It runs with admin rights every week, so
+#     a copy anywhere the user (or malware running as them) can write would
+#     hand out admin rights.
+#   - Task Scheduler \dailyrunme\Weekly: Fridays at 23:00 with full scans,
+#     with the user's admin rights and no prompt. Wakes the PC from sleep; if
+#     the PC was off or signed out, it runs at the next chance.
+#   - Task Scheduler \dailyrunme\Run now: the same, without full scans unless
+#     it's the weekend, started by the Desktop shortcut "Check and update this
+#     PC" (no permission prompt).
+# Run it again after changing the script, to update the copy.
+# ---------------------------------------------------------------
+$InstallDir = Join-Path $env:ProgramFiles 'dailyrunme'
+$TaskFolder = '\dailyrunme\'
+$ShortcutName = 'Check and update this PC.lnk'
+
+function Install-DailyRunMe {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    # The account signed in at the screen (the owner of this session's
+    # Explorer) must be the one running this. If Windows asked for another
+    # account's password to get admin rights, the signed-in user isn't an
+    # administrator, and a task running as them couldn't get admin rights.
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $session = (Get-Process -Id $PID).SessionId
+    $explorer = @(Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe' AND SessionId = $session")
+    if ($explorer.Count -gt 0) {
+        $owner = (Invoke-CimMethod -InputObject $explorer[0] -MethodName GetOwnerSid).Sid
+        if ($owner -and $owner -ne $me.User.Value) {
+            $name = $owner
+            try { $name = ([Security.Principal.SecurityIdentifier]$owner).Translate([Security.Principal.NTAccount]).Value } catch { Write-Verbose 'no account name' }
+            throw "The account signed in at the screen ($name) isn't an administrator, so the weekly run couldn't get admin rights. Make it an administrator, or sign in as one, and run install-dailyrunme.cmd again."
+        }
+    }
+
+    Write-Banner 'Installing dailyrunme' '#' Cyan
+    $target = Join-Path $InstallDir 'dailyrunme.ps1'
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    if ($PSCommandPath -ne $target) { Copy-Item -LiteralPath $PSCommandPath -Destination $target -Force }
+    # Program Files' own permissions, in case the folder was made with others
+    & icacls.exe $InstallDir /reset /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't reset the permissions of $InstallDir (icacls exit $LASTEXITCODE)" }
+    # The downloaded-from-the-internet mark, which SmartScreen would block
+    Unblock-File -LiteralPath $target
+    Write-Host "  Script: $target" -ForegroundColor Green
+
+    # The old schtasks example in this script's notes made \dailyrunme
+    Get-ScheduledTask -TaskPath '\' -TaskName 'dailyrunme' -ErrorAction SilentlyContinue |
+        Unregister-ScheduledTask -Confirm:$false
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $principal = New-ScheduledTaskPrincipal -UserId $me.Name -LogonType Interactive -RunLevel Highest
+    # A run takes hours on the weekly run's full scans, so no time limit
+    # beyond Windows' default of 3 days; a second start while one runs is ignored
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+    $action = { param($extra) New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$target`"$extra" }
+    Register-ScheduledTask -TaskPath $TaskFolder -TaskName 'Weekly' -Action (& $action ' -FullScan') `
+        -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Friday -At '23:00') -Principal $principal -Settings $settings `
+        -Description 'dailyrunme with full scans, every Friday at 23:00' -Force | Out-Null
+    Register-ScheduledTask -TaskPath $TaskFolder -TaskName 'Run now' -Action (& $action '') `
+        -Principal $principal -Settings $settings -Description 'dailyrunme, started by the Desktop shortcut' -Force | Out-Null
+    # Let the user start "Run now" without admin rights (read and execute), so
+    # the shortcut doesn't need a permission prompt. It still runs with their
+    # admin rights, as set up here.
+    try {
+        $service = New-Object -ComObject Schedule.Service
+        $service.Connect()
+        $task = $service.GetFolder($TaskFolder.TrimEnd('\')).GetTask('Run now')
+        $dacl = $task.GetSecurityDescriptor(4)   # 4: the DACL only, "D:(A;...)..."
+        $ace = "(A;;GRGX;;;$($me.User.Value))"
+        if ($dacl -notlike "*$ace*") { $task.SetSecurityDescriptor("$dacl$ace", 0) }
+    } catch {
+        Write-Host "  Couldn't let $($me.Name) start the task without a prompt ($($_.Exception.Message)); the shortcut may need Run as administrator" -ForegroundColor Yellow
+    }
+    Write-Host "  Weekly run: Fridays at 23:00, as $($me.Name) (Task Scheduler > $($TaskFolder)Weekly)" -ForegroundColor Green
+
+    $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) $ShortcutName
+    $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+    try {
+        $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+        $s.TargetPath = $schtasks
+        $s.Arguments = "/Run /TN `"$($TaskFolder)Run now`""
+        $s.WindowStyle = 7   # minimized: schtasks only starts the task
+        $s.Description = 'Checks this PC for problems and installs updates. Can take an hour or more; leave its window open until a message says it has finished.'
+        $icon = Join-Path $env:SystemRoot 'System32\SecurityHealthSystray.exe'
+        $s.IconLocation = if (Test-Path -LiteralPath $icon) { "$icon,0" } else { "$env:SystemRoot\System32\shell32.dll,47" }
+        $s.Save()
+        Write-Host "  Desktop shortcut: $lnk" -ForegroundColor Green
+    } catch {
+        # Controlled folder access protects the Desktop
+        Write-Fail "[Install] Couldn't make the Desktop shortcut ($($_.Exception.Message)). Make one by hand: target $schtasks /Run /TN `"$($TaskFolder)Run now`""
+    }
+
+    Write-Host ''
+    Write-Host 'Installed. To check the PC now, double-click the Desktop shortcut.'
+    Write-Host "Logs, reports and registry undo files: $LogDir"
+}
+
+function Uninstall-DailyRunMe {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Removing dailyrunme' '#' Cyan
+    Get-ScheduledTask -TaskPath $TaskFolder -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+    try {
+        $service = New-Object -ComObject Schedule.Service
+        $service.Connect()
+        $service.GetFolder('\').DeleteFolder($TaskFolder.Trim('\'), 0)
+    } catch {
+        Write-Verbose 'task folder already gone'
+    }
+    Write-Host '  Scheduled tasks removed' -ForegroundColor Green
+    Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) $ShortcutName) -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "  Desktop shortcut and $InstallDir removed" -ForegroundColor Green
+    Write-Host ''
+    Write-Host "The settings it applied stay. Logs, reports and registry undo files are kept in $LogDir."
+}
+
+# ---------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------
+
+if ($Install -or $Uninstall) {
+    $script:Step = if ($Install) { 'install' } else { 'uninstall' }
+    try {
+        if ($Install) { Install-DailyRunMe } else { Uninstall-DailyRunMe }
+    } catch {
+        Write-Fail $_.Exception.Message
+    }
+    if ($script:Failures.Count -gt 0) { exit 1 }
+    exit 0
+}
+
+# What the person using the PC sees in the taskbar while it runs
+try {
+    $Host.UI.RawUI.WindowTitle = 'Checking and updating this PC. This can take an hour or more; please leave this window open.'
+} catch {
+    Write-Verbose 'no console'
+}
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 Get-ChildItem -LiteralPath $LogDir -Filter 'dailyrunme-*.log' |
@@ -4378,42 +4572,79 @@ try {
     Stop-Transcript | Out-Null
 }
 
-# Last of all, so the window opens once the script has nothing left to do
-if ($script:HistoryFile) {
+# Last of all, so the windows open once the script has nothing left to do.
+# The report includes the Protection history.
+if ($script:StatusFile) {
+    Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$script:StatusFile`""
+} elseif ($script:HistoryFile) {
     Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$script:HistoryFile`""
 }
 if ($script:EekLog) {
     Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$script:EekLog`""
 }
 
-# After Notepad starts, so this window is the one in front. Only when something
-# this run changed, or Windows Update, is actually waiting on a restart.
-# The script does not restart the PC.
-if ($script:RestartReasons.Count -gt 0) {
-    $popup = "A restart is needed.`r`n`r`n" + ($script:RestartReasons -join "`r`n")
+# Then one message in plain words, after Notepad so it's in front. After a
+# weekly run at night it waits there for the morning. The PC restarts only
+# if Yes is clicked, when something is actually waiting on a restart.
+$report = if ($script:StatusFile -and $script:StatusFile -like "$([Environment]::GetFolderPath('Desktop'))*") {
+    '"PC check report.txt" on your Desktop'
+} elseif ($script:StatusFile) {
+    $script:StatusFile
+} else {
+    $transcript
+}
+$popup = [System.Collections.Generic.List[string]]::new()
+if ($script:Failures.Count -gt 0) {
+    $popup.Add("The check found $($script:Failures.Count) problem(s).")
+    $popup.Add('')
+    $popup.Add("The details are in $report, open in Notepad. Please send that file to $(Get-HelperName).")
+    if ($script:EekLog) {
+        $popup.Add('')
+        $popup.Add('Emsisoft Emergency Kit found possible malware; its log is open in Notepad too.')
+    }
+} else {
+    $popup.Add('Your PC has been checked and updated. No problems were found.')
+}
+$restart = $script:RestartReasons.Count -gt 0
+if ($restart) {
+    $popup.Add('')
+    $popup.Add('A restart is needed to finish:')
+    foreach ($r in $script:RestartReasons) { $popup.Add("- $r") }
+    $popup.Add('')
+    $popup.Add('Save your work, then click Yes to restart now. Click No to restart later yourself.')
+}
+$shown = $false
+$answer = $null
+try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+        $buttons = if ($restart) { 'YesNo' } else { 'OK' }
+        $icon = if ($script:Failures.Count -gt 0) { 'Warning' } elseif ($restart) { 'Question' } else { 'Information' }
+        # A hidden always-on-top window as its owner, so the message isn't
+        # lost behind Notepad or other windows
+        $owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }
+        $answer = [System.Windows.Forms.MessageBox]::Show($owner, ($popup -join "`r`n"), 'PC check',
+            [System.Windows.Forms.MessageBoxButtons]::$buttons, [System.Windows.Forms.MessageBoxIcon]::$icon)
+        $owner.Dispose()
+        $shown = $true
+    }
+} catch {
     $shown = $false
-    try {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        if ([Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
-            [void][System.Windows.Forms.MessageBox]::Show(
-                $popup,
-                'dailyrunme',
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning)
-            $shown = $true
-        }
-    } catch {
-        $shown = $false
+}
+if (-not $shown) {
+    # msg.exe has no Yes/No buttons
+    if ($restart) { $popup[$popup.Count - 1] = 'Please restart the PC when you can.' }
+    $msg = ($popup -join ' ')
+    if ($msg.Length -gt 240) { $msg = $msg.Substring(0, 240) }
+    $msgCmd = Get-Command msg.exe -ErrorAction SilentlyContinue
+    if ($msgCmd) { & $msgCmd.Source $env:USERNAME /TIME:3600 $msg | Out-Null }
+    if (-not $msgCmd -or $LASTEXITCODE -ne 0) {
+        Write-Host 'The final message could not be shown; the result is in the summary and the report.' -ForegroundColor Yellow
     }
-    if (-not $shown) {
-        $msg = "A restart is needed. " + ($script:RestartReasons -join ' ')
-        if ($msg.Length -gt 240) { $msg = $msg.Substring(0, 240) }
-        $msgCmd = Get-Command msg.exe -ErrorAction SilentlyContinue
-        if ($msgCmd) { & $msgCmd.Source $env:USERNAME /TIME:120 $msg | Out-Null }
-        if (-not $msgCmd -or $LASTEXITCODE -ne 0) {
-            Write-Host 'A restart is needed. The popup could not be shown; the reasons are in the summary and the status file.' -ForegroundColor Yellow
-        }
-    }
+}
+if ("$answer" -eq 'Yes') {
+    # 30 seconds' warning; Windows closes programs that are still open
+    & shutdown.exe /r /t 30 /c 'Restarting to finish the PC check'
 }
 
 if ($script:Failures.Count -gt 0) { exit 1 }
