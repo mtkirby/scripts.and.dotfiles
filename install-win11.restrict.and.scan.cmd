@@ -1,15 +1,15 @@
 @echo off
-rem Sets up dailyrunme.ps1 on this PC for whoever is signed in, so it can be
+rem Sets up win11.restrict.and.scan.ps1 on this PC for whoever is signed in, so it can be
 rem used without knowing PowerShell:
-rem   - a copy in C:\Program Files\dailyrunme (only administrators can change it)
-rem   - a weekly run, Fridays at 23:00, with full virus scans
+rem   - a copy in C:\Program Files\win11.restrict.and.scan (only administrators can change it)
+rem   - a weekly run, Fridays at 20:00, with full virus scans
 rem   - "Check and update this PC" on the Desktop, to run it any time
 rem
 rem Sign in as the person who uses the PC (their account must be an
-rem administrator), keep this file in the same folder as dailyrunme.ps1, and
+rem administrator), keep this file in the same folder as win11.restrict.and.scan.ps1, and
 rem double-click it. Answer Yes when Windows asks for permission.
-rem Run it again after changing dailyrunme.ps1, to update the installed copy.
-rem To remove it:  install-dailyrunme.cmd /uninstall
+rem Run it again after changing win11.restrict.and.scan.ps1, to update the installed copy.
+rem To remove it:  install-win11.restrict.and.scan.cmd /uninstall
 rem
 rem If Windows says it "protected your PC" and won't run this, right-click the
 rem file > Properties > tick Unblock > OK, then double-click it again.
@@ -25,13 +25,13 @@ if errorlevel 1 (
     exit /b
 )
 
-if not exist "%~dp0dailyrunme.ps1" (
-    echo dailyrunme.ps1 isn't in %~dp0
-    echo Put this file in the same folder as dailyrunme.ps1 and try again.
+if not exist "%~dp0win11.restrict.and.scan.ps1" (
+    echo win11.restrict.and.scan.ps1 isn't in %~dp0
+    echo Put this file in the same folder as win11.restrict.and.scan.ps1 and try again.
     goto done
 )
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0dailyrunme.ps1" %mode%
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0win11.restrict.and.scan.ps1" %mode%
 if errorlevel 1 (
     echo.
     echo Something went wrong; see the messages above.
@@ -42,7 +42,7 @@ if /i not "%mode%"=="-Install" goto done
 echo.
 choice /m "Run the first check now? It can take an hour or more"
 if errorlevel 2 goto done
-schtasks /Run /TN "\dailyrunme\Run now"
+schtasks /Run /TN "\win11.restrict.and.scan\Run now"
 
 :done
 echo.
