@@ -2739,6 +2739,22 @@ then
     }
 
     ##
+    # Run PowerShell code from a temporary .ps1 file instead of the command line.
+    # Defender treats a long -Command line that downloads something as a
+    # ClickFix attack (Trojan:Win32/ClickFix.STB) and stops powershell.exe
+    # starting, which bash reports as "Permission denied". mktemp -d makes the
+    # folder readable only by you; it's removed afterwards.
+    function winpsfile()
+    {
+        local dir rc
+        dir="$(mktemp -d /tmp/winpsfile.XXXXXX)" || return 1
+        printf '%s\n' "$1" > "$dir/run.ps1"
+        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$dir/run.ps1")"
+        rc=$?
+        rm -rf "$dir"
+        return "$rc"
+    }
+    ##
     function mywinprocsigs()
     {
         mkbanner "mywinprocsigs" '#' yellow
@@ -2759,7 +2775,7 @@ then
         # Microsoft, so the check above passes it. Alerts on a running one that was
         # renamed, or that runs from outside its usual folders.
         # shellcheck disable=SC2016
-        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+        winpsfile '
             $ErrorActionPreference = "SilentlyContinue"
             $c = @{ found = 0 }
             try {
@@ -2842,7 +2858,7 @@ then
             return 1
         fi
         # shellcheck disable=SC2016
-        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+        winpsfile '
             $ErrorActionPreference = "SilentlyContinue"
             $c = @{ found = 0; noted = 0 }
             function Alert([string]$m) { "ALERT=`"$m`""; $c.found++ }
@@ -3022,7 +3038,7 @@ then
             return 1
         fi
         # shellcheck disable=SC2016
-        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+        winpsfile '
             $ErrorActionPreference = "SilentlyContinue"
             $script:found = 0
             $script:third = 0
@@ -3392,7 +3408,7 @@ then
             return 1
         fi
         # shellcheck disable=SC2016
-        /cygdrive/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '
+        winpsfile '
             $full = (Get-Date).DayOfWeek -eq "Sunday"
             $url = if ([Environment]::Is64BitOperatingSystem) { "https://go.microsoft.com/fwlink/?LinkId=212732" } else { "https://go.microsoft.com/fwlink/?LinkId=212733" }
             $dir = Join-Path $env:TEMP "msert-$PID"
