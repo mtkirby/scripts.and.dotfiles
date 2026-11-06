@@ -1,0 +1,20 @@
+7-Zip
+GIMP
+Git
+GitHub CLI
+GitHub Desktop
+Google Chrome
+Gpg4win
+HandBrake
+Microsoft.Teams
+Microsoft.VisualStudioCode
+Mozilla Firefox
+OBS Studio
+PC Manager
+PuTTY CAC
+Snipping Tool
+TigerVNC
+Vim 9.2
+Visual Studio Code
+WinDirStat
+Zoom.Zoom
