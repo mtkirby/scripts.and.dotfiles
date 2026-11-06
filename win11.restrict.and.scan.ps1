@@ -3377,7 +3377,10 @@ function Test-WindowsHealth {
     $progress = '^\s*$|^\s*\[[= ]*[0-9.]+%[= ]*\]\s*$|[0-9]+% complete\.?\s*$'
     $found = [System.Collections.Generic.List[string]]::new()
     foreach ($c in $cmds) {
-        $exe, $rest = $c
+        # @() matters: with one argument $rest would be a plain string, and
+        # splatting a string passes each character separately (/ s c a n...)
+        $exe = $c[0]
+        $rest = @($c | Select-Object -Skip 1)
         $line = $c -join ' '
         Write-Banner $line '.'
         Write-Host 'Running; this can take 10-30 minutes...'
