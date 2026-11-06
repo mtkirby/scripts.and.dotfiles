@@ -4820,6 +4820,30 @@ try {
     Write-Verbose 'no console'
 }
 
+# QuickEdit off while this runs. With it on, a click in the window starts
+# selecting text, and Windows pauses the script the next time it writes
+# until Enter or Esc is pressed (the title bar then starts with "Select").
+# Put back at the end. Windows Terminal doesn't pause, and has no such mode.
+$consoleInMode = $null
+try {
+    if (-not ('Win11RestrictAndScan.ConsoleMode' -as [type])) {
+        Add-Type -Namespace Win11RestrictAndScan -Name ConsoleMode -MemberDefinition '
+            [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int which);
+            [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetConsoleMode(IntPtr h, out uint mode);
+            [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleMode(IntPtr h, uint mode);'
+    }
+    $stdin = [Win11RestrictAndScan.ConsoleMode]::GetStdHandle(-10)
+    $mode = [uint32]0
+    if ([Win11RestrictAndScan.ConsoleMode]::GetConsoleMode($stdin, [ref]$mode)) {
+        # 0x40 = QuickEdit; 0x80 (extended flags) is needed for the change to apply
+        if ([Win11RestrictAndScan.ConsoleMode]::SetConsoleMode($stdin, (($mode -band (-bnot [uint32]0x40)) -bor [uint32]0x80))) {
+            $consoleInMode = $mode
+        }
+    }
+} catch {
+    Write-Verbose "couldn't turn QuickEdit off: $($_.Exception.Message)"
+}
+
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 Get-ChildItem -LiteralPath $LogDir -Filter 'win11.restrict.and.scan-*.log' |
     Where-Object LastWriteTime -lt (Get-Date).AddDays(-30) |
@@ -4924,6 +4948,13 @@ try {
 } finally {
     if ($consoleEncoding) {
         try { [Console]::OutputEncoding = $consoleEncoding } catch { Write-Verbose 'no console' }
+    }
+    if ($null -ne $consoleInMode) {
+        try {
+            [void][Win11RestrictAndScan.ConsoleMode]::SetConsoleMode([Win11RestrictAndScan.ConsoleMode]::GetStdHandle(-10), $consoleInMode)
+        } catch {
+            Write-Verbose 'no console'
+        }
     }
     Stop-Transcript | Out-Null
 }
