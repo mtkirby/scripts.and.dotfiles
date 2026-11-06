@@ -58,9 +58,10 @@
        - reputation:      App & browser control > Reputation-based protection:
                           SmartScreen (warn and prevent bypass), Edge
                           SmartScreen, phishing protection, Store apps
-       - defenderexclusions: an exclusion, or a Controlled folder access app,
-                          that is not on the approved lists is removed. A failure
-                          only if one could not be removed
+       - defenderexclusions: the approved exclusions are added, and an
+                          exclusion, or a Controlled folder access app, that is
+                          not on the approved lists is removed. A failure only
+                          if one could not be added or removed
     4. Updates:
        - patchwindows:    Windows Update, drivers and other Microsoft products
                           included; optional updates listed, not installed.
@@ -257,6 +258,8 @@ $OfficeBlockedFileBehavior = 1
 # protects (Documents, Pictures, Desktop...; see Section 10). Signed,
 # well-known programs are allowed automatically. Add the full path of
 # anything else it blocks; blocks show in the Protection history report.
+# Every run adds these and removes any other allowed program. This is not
+# for antivirus scan exceptions: they're $ApprovedDefenderExclusions below.
 # ---------------------------------------------------------------
 $ControlledFolderAllowedApps = @(
     'C:\cygwin\bin\bash.exe'
@@ -296,19 +299,28 @@ $ApprovedHostsEntries = @(
 $HelperContact = ''
 
 # ---------------------------------------------------------------
-# Defender exclusions: EDIT THIS LIST
-# Anything Defender excludes that is not listed here is a failure, so an
-# exclusion added by malware or by an installer shows up in the summary.
-# An empty list means every exclusion is a failure. Paths are compared
-# without a trailing slash (a drive root such as C:\ keeps its slash) and
-# without regard to case. Controlled folder access programs are
+# Defender exclusions (antivirus scan exceptions): EDIT THIS LIST
+# Every run adds anything listed here that Defender doesn't have, and removes
+# any exclusion that isn't listed, so one added by malware or by an installer
+# is taken off and shows in the report. Paths are compared without a
+# trailing slash (a drive root such as C:\ keeps its slash) and without
+# regard to case. Controlled folder access programs are
 # $ControlledFolderAllowedApps above, not this list.
+#   Path      - a file or folder that isn't scanned
+#   Process   - a program whose files it opens aren't scanned as it opens
+#               them. The program itself, and anything it starts, still is,
+#               and scheduled and full scans still check every file.
+#   Extension - a file type that isn't scanned, e.g. 'log'
+#   AttackSurfaceReduction - a program the attack surface reduction rules
+#               allow (it's still scanned)
 # ---------------------------------------------------------------
 $ApprovedDefenderExclusions = @{
     Path                   = @(
-        # 'C:\Tools\example.exe'
+        'C:\cygwin'
     )
-    Process                = @()
+    Process                = @(
+        # 'C:\example\example.exe'
+    )
     Extension              = @()
     AttackSurfaceReduction = @()
 }
@@ -4133,9 +4145,11 @@ function Get-DefenderPreferenceList {
     return @($prop.Value)
 }
 
-# Remove any exclusion Defender has that the lists at the top don't name.
-# An approved path is left alone. A failure is one that could not be removed
-# (Tamper protection, or a policy, is the usual reason).
+# Add the approved exclusions Defender doesn't have, and remove any exclusion
+# it has that the lists at the top don't name. A failure is one that could
+# not be added or removed (Tamper protection, or a policy, is the usual
+# reason). Controlled folder access apps are added by Set-DefenderSetting,
+# so they're only removed here.
 function Test-DefenderExclusion {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
@@ -4149,14 +4163,47 @@ function Test-DefenderExclusion {
         return
     }
     $checks = @(
-        @{ Label = 'path'; Property = 'ExclusionPath'; Approved = @($ApprovedDefenderExclusions.Path); Kind = 'path' }
-        @{ Label = 'process'; Property = 'ExclusionProcess'; Approved = @($ApprovedDefenderExclusions.Process); Kind = 'path' }
-        @{ Label = 'extension'; Property = 'ExclusionExtension'; Approved = @($ApprovedDefenderExclusions.Extension); Kind = 'extension' }
-        @{ Label = 'ASR-only exclusion'; Property = 'AttackSurfaceReductionOnlyExclusions'; Approved = @($ApprovedDefenderExclusions.AttackSurfaceReduction); Kind = 'path' }
-        @{ Label = 'Controlled folder access app'; Property = 'ControlledFolderAccessAllowedApplications'; Approved = @($ControlledFolderAllowedApps); Kind = 'path' }
+        @{ Label = 'path'; Property = 'ExclusionPath'; Approved = @($ApprovedDefenderExclusions.Path); Kind = 'path'; Add = $true }
+        @{ Label = 'process'; Property = 'ExclusionProcess'; Approved = @($ApprovedDefenderExclusions.Process); Kind = 'path'; Add = $true }
+        @{ Label = 'extension'; Property = 'ExclusionExtension'; Approved = @($ApprovedDefenderExclusions.Extension); Kind = 'extension'; Add = $true }
+        @{ Label = 'ASR-only exclusion'; Property = 'AttackSurfaceReductionOnlyExclusions'; Approved = @($ApprovedDefenderExclusions.AttackSurfaceReduction); Kind = 'path'; Add = $true }
+        @{ Label = 'Controlled folder access app'; Property = 'ControlledFolderAccessAllowedApplications'; Approved = @($ControlledFolderAllowedApps); Kind = 'path'; Add = $false }
     )
+    $added = 0
+    $addFailed = @{}
     $removed = 0
     $stuck = 0
+
+    # Add what's missing. The parameter names match the preference property names.
+    foreach ($check in $checks) {
+        if (-not $check.Add) { continue }
+        $have = @(Get-DefenderPreferenceList -Preference $pref -Name $check.Property | ForEach-Object {
+            ConvertTo-NormalizedDefenderItem -Value "$_" -Kind $check.Kind
+        })
+        foreach ($item in @($check.Approved)) {
+            $text = "$item".Trim()
+            if (-not $text) { continue }
+            if ($have -contains (ConvertTo-NormalizedDefenderItem -Value $text -Kind $check.Kind)) { continue }
+            try {
+                $splat = @{ $check.Property = $text }
+                Add-MpPreference @splat -ErrorAction Stop
+                $added += 1
+                Write-Host "  [Defender] Added $($check.Label) exclusion: $text" -ForegroundColor Green
+            } catch {
+                Write-Fail "[Defender] Couldn't add $($check.Label) exclusion ${text}: $($_.Exception.Message)"
+                $addFailed["$($check.Property)|$text"] = $true
+            }
+        }
+    }
+    if ($added) {
+        try {
+            $pref = Get-MpPreference -ErrorAction Stop
+        } catch {
+            Write-Fail "[Defender] Couldn't re-read exclusions: $($_.Exception.Message)"
+            return
+        }
+    }
+
     foreach ($check in $checks) {
         $approved = @($check.Approved | ForEach-Object {
             ConvertTo-NormalizedDefenderItem -Value "$_" -Kind $check.Kind
@@ -4190,21 +4237,36 @@ function Test-DefenderExclusion {
         $approved = @($check.Approved | ForEach-Object {
             ConvertTo-NormalizedDefenderItem -Value "$_" -Kind $check.Kind
         } | Where-Object { $_ })
+        $have = @()
         foreach ($raw in @(Get-DefenderPreferenceList -Preference $left -Name $check.Property)) {
             if ($null -eq $raw) { continue }
             $text = "$raw".Trim()
             if (-not $text) { continue }
             $norm = ConvertTo-NormalizedDefenderItem -Value $text -Kind $check.Kind
+            $have += $norm
             if ($approved -notcontains $norm) {
                 $stuck += 1
                 Write-Fail "[Defender] Unapproved $($check.Label) is still set: $text"
             }
         }
+        if (-not $check.Add) { continue }
+        foreach ($item in @($check.Approved)) {
+            $text = "$item".Trim()
+            if (-not $text) { continue }
+            if ($have -notcontains (ConvertTo-NormalizedDefenderItem -Value $text -Kind $check.Kind)) {
+                $stuck += 1
+                # Already reported when adding it failed
+                if ($addFailed["$($check.Property)|$text"]) { continue }
+                Write-Fail "[Defender] Approved $($check.Label) exclusion didn't stick: $text"
+            }
+        }
     }
-    if ($stuck -eq 0 -and $removed -eq 0) {
-        Write-Host '  [Defender] Exclusions match the approved lists' -ForegroundColor Green
-    } elseif ($stuck -eq 0) {
-        Write-Host "  [Defender] Removed $removed unapproved exclusion(s)" -ForegroundColor Green
+    if ($stuck -eq 0) {
+        if ($added -eq 0 -and $removed -eq 0) {
+            Write-Host '  [Defender] Exclusions match the approved lists' -ForegroundColor Green
+        } else {
+            Write-Host "  [Defender] Exclusions now match the approved lists ($added added, $removed removed)" -ForegroundColor Green
+        }
     }
 }
 
