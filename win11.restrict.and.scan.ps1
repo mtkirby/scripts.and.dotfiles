@@ -1,6 +1,6 @@
 <#
 .VERSION
-    2026-11-05
+    2026-11-06
 
 .SYNOPSIS
     Weekly Windows run: security hardening, updates, a background Defender scan,
@@ -34,6 +34,9 @@
                           entries, with its location and permissions checked
        - scriptprotect:   Defender ASR rules, PowerShell logging,
                           PowerShell 2.0 removed, Windows Script Host off
+       - taskhistory:     Task Scheduler history on (every task's History tab),
+                          with a 100 MB log. A failure if it was turned off
+                          after an earlier run turned it on
        - cis-office:      Microsoft Office (CIS Microsoft Office Enterprise
                           Benchmark v1.2.0, Level 1) for every user account
        - firewall:        a Windows Firewall profile that is off is turned back
@@ -54,7 +57,9 @@
                           "Use default", alerting on any that were turned off
        - defendersettings: real-time, cloud, sample submission, potentially
                           unwanted apps, network protection, Dev Drive,
-                          Controlled folder access; checks Tamper protection
+                          Controlled folder access (also protecting each
+                          user's Downloads, OneDrive, moved folders and
+                          $ExtraProtectedFolders); checks Tamper protection
        - reputation:      App & browser control > Reputation-based protection:
                           SmartScreen (warn and prevent bypass), Edge
                           SmartScreen, phishing protection, Store apps
@@ -134,8 +139,9 @@
     The file's header lists what it can't undo.
 
     The settings to edit (approved Chrome extensions, JavaScript optimizer sites,
-    Office's old file formats, Controlled folder access apps, DNS servers, hosts
-    entries, and approved Defender exclusions) are at the top of the script.
+    Office's old file formats, Controlled folder access apps and extra protected
+    folders, DNS servers, hosts entries, and approved Defender exclusions) are at
+    the top of the script.
 
 .PARAMETER LogDir
     Where the transcript, the Defender scan log and the registry undo files go.
@@ -268,6 +274,23 @@ $ControlledFolderAllowedApps = @(
 )
 
 # ---------------------------------------------------------------
+# More folders for Controlled folder access to protect (see Section 10),
+# such as data drives and backup folders. Each user's Desktop, Documents,
+# Pictures, Videos, Music, Downloads and OneDrive are added already. Only
+# programs Windows trusts, or ones in $ControlledFolderAllowedApps above,
+# can change files in them; a whole drive means everything on it, including
+# programs installed there that save to their own folder (game libraries).
+# A drive or folder that isn't there (an unplugged USB drive) is skipped,
+# and a CD/DVD drive is never added. Removing one from this list doesn't
+# unprotect it: Windows Security > Ransomware protection > Protected folders.
+# ---------------------------------------------------------------
+$ExtraProtectedFolders = @(
+    'D:\'
+    'E:\'
+    'F:\'
+)
+
+# ---------------------------------------------------------------
 # DNS servers, in order of preference (see Section 5)
 # Each has its DNS over HTTPS (DoH) address so Windows can encrypt queries to
 # it. The IPv6 servers matter too: without them, a router that hands out its
@@ -311,18 +334,28 @@ $HelperContact = ''
 #               them. The program itself, and anything it starts, still is,
 #               and scheduled and full scans still check every file.
 #   Extension - a file type that isn't scanned, e.g. 'log'
-#   AttackSurfaceReduction - a program the attack surface reduction rules
-#               allow (it's still scanned)
+#   AttackSurfaceReduction - a program, or a folder and everything in it,
+#               that the attack surface reduction rules allow (it's still
+#               scanned)
 # ---------------------------------------------------------------
 $ApprovedDefenderExclusions = @{
     Path                   = @(
-        'C:\cygwin'
+        'C:\ProgramData\chocolatey'
+        'C:\EEK'
     )
     Process                = @(
-        # 'C:\example\example.exe'
+        'C:\cygwin\bin\bash.exe'
+        'C:\cygwin\bin\git.exe'
+        'C:\EEK\bin64\a2cmd.exe'
+        'C:\EEK\bin32\a2cmd.exe'
     )
     Extension              = @()
-    AttackSurfaceReduction = @()
+    AttackSurfaceReduction = @(
+        'C:\tools'  # Chocolatey installs some programs here
+        'C:\cygwin'
+        'C:\ProgramData\chocolatey'
+        'C:\EEK'
+    )
 }
 
 # ---------------------------------------------------------------
@@ -548,7 +581,7 @@ function Save-RegistryUndo {
         'them from a .reg file): DNS servers and DoH addresses, the hosts file'
         '(backed up beside this file), firewall rules and firewall profiles,'
         'DEP (bcdedit), PowerShell 2.0, the SMB1Protocol feature, Quick Assist,'
-        'the PowerShell log size, Defender settings, ASR rules, and Defender'
+        'the PowerShell log size, scheduled task history, Defender settings, ASR rules, and Defender'
         'exclusions, file permissions, removed Chrome extension folders, WinRM'
         'listeners, BitLocker protectors, System Restore points, installed Windows'
         'updates, and the Microsoft Update'
@@ -1629,6 +1662,73 @@ function Set-ScriptProtection {
 }
 
 # ---------------------------------------------------------------
+# SECTION 6b: Scheduled task history (not CIS)
+# Task Scheduler's history (each task's History tab, and "Enable All Tasks
+# History") is one event log for all tasks, and Windows ships with it off.
+# On, it records every time a task starts, finishes (with its exit code),
+# is skipped or fails, so you can see whether the weekly run happened. It
+# also records every task that is created, changed or deleted (events 106,
+# 140, 141), which is how a lot of malware makes itself start again.
+# Event Viewer: Applications and Services Logs > Microsoft > Windows >
+# TaskScheduler > Operational. Its default 10 MB is a few days on a busy PC;
+# at 100 MB it keeps weeks, the oldest overwritten first. A bigger size that
+# was set some other way is left alone.
+# Malware that wants to hide its task turns the log off, so if an earlier
+# run turned it on (noted in the log folder) and it's off again, that's a
+# failure. Turn it off in Task Scheduler > Action > Disable All Tasks
+# History, after taking this step out of the script.
+# ---------------------------------------------------------------
+function Enable-TaskHistory {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Turning On Scheduled Task History' '.'
+
+    $logName = 'Microsoft-Windows-TaskScheduler/Operational'
+    $size = 100MB
+    $marker = Join-Path $LogDir 'taskhistory-on.txt'
+    try {
+        $cfg = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration $logName
+    } catch {
+        Write-Fail "[Logging] Couldn't read the Task Scheduler log settings: $($_.Exception.Message)"
+        return
+    }
+    $wasOn = [bool]$cfg.IsEnabled
+    $oldSize = [long]$cfg.MaximumSizeInBytes
+    if (-not $wasOn -or $oldSize -lt $size) {
+        try {
+            if (-not $wasOn) { $cfg.IsEnabled = $true }
+            if ($oldSize -lt $size) { $cfg.MaximumSizeInBytes = $size }
+            $cfg.SaveChanges()
+        } catch {
+            Write-Fail "[Logging] Couldn't turn on scheduled task history: $($_.Exception.Message)"
+            return
+        }
+    }
+
+    # Read back what Windows is using
+    $now = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration $logName
+    if (-not $now.IsEnabled) {
+        Write-Fail "[Logging] Scheduled task history didn't turn on (a policy may be holding it off)"
+        return
+    }
+    if ($wasOn) {
+        Write-Host '  [Logging] Scheduled task history: on' -ForegroundColor Green
+    } elseif (Test-Path -LiteralPath $marker) {
+        Write-Fail '[Logging] Scheduled task history had been turned off since an earlier run turned it on; turned back on. Unless you did that, something may have been hiding what a task does'
+    } else {
+        Write-Host '  [Logging] Scheduled task history: turned on' -ForegroundColor Green
+    }
+    $mb = [Math]::Round($now.MaximumSizeInBytes / 1MB)
+    if ($oldSize -lt $size) {
+        Write-Host "  [Logging] Task Scheduler log max size = $mb MB (was $([Math]::Round($oldSize / 1MB)) MB)" -ForegroundColor Green
+    } else {
+        Write-Host "  [Logging] Task Scheduler log max size = $mb MB" -ForegroundColor Green
+    }
+    Set-Content -LiteralPath $marker -Encoding ASCII -Value "Scheduled task history turned on by win11.restrict.and.scan.ps1; last checked $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+}
+
+# ---------------------------------------------------------------
 # SECTION 7: Microsoft Office
 # CIS Microsoft Office Enterprise Benchmark v1.2.0, Level 1. It covers the
 # desktop Office apps installed on the PC (Microsoft 365 Apps, Office
@@ -1858,9 +1958,9 @@ function Set-OfficeHardening {
 
     # Word (2.11) --------------------------------------------------------
     Add-OfficeSetting "$o\word\options" 'dontupdatelinks' 1                 # don't update links to other files on open
-    Add-OfficeSetting "$o\word\options" 'showhiddentext' 1                  # hidden text is shown, so nothing hides in it
+    #Add-OfficeSetting "$o\word\options" 'showhiddentext' 1                  # hidden text is shown, so nothing hides in it
     Add-OfficeSetting "$o\word\options" 'defaultformat' ''                  # save as .docx (empty text = .docx)
-    Add-OfficeSetting "$o\word\options" 'showmarkupopensave' 1              # show hidden comments and tracked changes
+    #Add-OfficeSetting "$o\word\options" 'showmarkupopensave' 1              # show hidden comments and tracked changes
     foreach ($name in 'word2files', 'word60files', 'word95files', 'word97files', 'word2000files', 'wordxpfiles',
                       'word2003files', 'word2007files') {
         # Binary .doc files saved by each Word version
@@ -2519,8 +2619,11 @@ function Reset-ExploitProtection {
 #     antivirus is allowed on Dev Drives. Needs Windows 11 23H2 or later.
 #   Controlled folder access - only trusted programs can change files in
 #     Documents, Pictures, Videos, Music, Desktop and Favorites, which stops
-#     ransomware encrypting them. Unknown programs that save there are
-#     blocked (Windows shows a notification); allow them with
+#     ransomware encrypting them. Also added: each user's Desktop, Documents,
+#     Pictures, Videos, Music and Downloads where they really are (in case
+#     they've been moved, e.g. into OneDrive), each OneDrive folder, and
+#     $ExtraProtectedFolders from the top. Unknown programs that save there
+#     are blocked (Windows shows a notification); allow them with
 #     $ControlledFolderAllowedApps at the top.
 #   Tamper protection - stops anything, including malware with admin rights,
 #     changing these settings. Windows deliberately has no way to turn it on
@@ -2608,6 +2711,92 @@ function Set-DefenderSetting {
                 } else {
                     Write-Fail "[Defender] Couldn't allow $app in Controlled folder access: $($_.Exception.Message)"
                 }
+            }
+        }
+
+        # More protected folders. Windows protects each user's Documents,
+        # Pictures, Videos, Music, Desktop and Favorites at C:\Users\<name>\...
+        # already. Added here, wherever they really are:
+        #   - those folders, plus Downloads, for each user. A folder that's
+        #     been moved (OneDrive's backup of Desktop, Documents and Pictures,
+        #     or Properties > Location) isn't covered by Windows' own entry.
+        #   - each user's OneDrive folder, which OneDrive would otherwise sync
+        #     encrypted files from
+        #   - $ExtraProtectedFolders from the top of the script
+        # The Default profile is skipped: it has no files. Nothing is removed
+        # from the list, since an extra protected folder only adds protection.
+        $folders = [System.Collections.Generic.List[pscustomobject]]::new()
+        $addFolder = {
+            param([string]$Path, [string]$What)
+            if ($Path -notmatch '^[A-Za-z]:\\|^\\\\') {
+                Write-Host "  [Defender] $What ($Path) isn't a full path; not protected" -ForegroundColor Yellow
+                return
+            }
+            if ($Path -match '^[A-Za-z]:\\?$') {
+                $Path = $Path.Substring(0, 2) + '\'
+                # An optical drive has nothing to protect
+                $drive = New-Object System.IO.DriveInfo $Path
+                if ("$($drive.DriveType)" -eq 'CDRom') {
+                    Write-Host "  [Defender] $What ($Path) is a CD/DVD drive; not protected" -ForegroundColor DarkGray
+                    return
+                }
+            }
+            if (-not (Test-Path -LiteralPath $Path)) {
+                Write-Host "  [Defender] $What ($Path) doesn't exist; not protected" -ForegroundColor DarkGray
+                return
+            }
+            $norm = ConvertTo-NormalizedDefenderPath $Path
+            if (@($folders | Where-Object { $_.Norm -eq $norm }).Count -eq 0) {
+                $folders.Add([pscustomobject]@{ Path = $Path; Norm = $norm; What = $What })
+            }
+        }
+        # User Shell Folders value names, and where each is if not moved
+        $knownFolders = [ordered]@{
+            'Desktop'                                = @{ What = 'Desktop'; Default = 'Desktop' }
+            'Personal'                               = @{ What = 'Documents'; Default = 'Documents' }
+            'My Pictures'                            = @{ What = 'Pictures'; Default = 'Pictures' }
+            'My Video'                               = @{ What = 'Videos'; Default = 'Videos' }
+            'My Music'                               = @{ What = 'Music'; Default = 'Music' }
+            '{374DE290-123F-4565-9164-39C4925E467B}' = @{ What = 'Downloads'; Default = 'Downloads' }
+        }
+        $profileList = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+        Invoke-InEachUserHive {
+            param($root, $label)
+            $sid = ($root -split '\\')[-1] -replace '^CIS_', ''
+            if ($sid -eq 'Default') { return }
+            $profilePath = "$((Get-ItemProperty -Path "$profileList\$sid" -ErrorAction SilentlyContinue).ProfileImagePath)"
+            if (-not $profilePath) { return }
+            $usf = Get-ItemProperty -Path "$root\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -ErrorAction SilentlyContinue
+            foreach ($name in $knownFolders.Keys) {
+                $raw = if ($usf -and $usf.PSObject.Properties[$name]) { "$($usf.$name)" } else { "%USERPROFILE%\$($knownFolders[$name].Default)" }
+                # %USERPROFILE% is that user's folder, not the one running this
+                $path = [Environment]::ExpandEnvironmentVariables(($raw -ireplace '%USERPROFILE%', $profilePath.Replace('$', '$$')))
+                & $addFolder $path "$label's $($knownFolders[$name].What)"
+            }
+            # OneDrive: one folder per signed-in account (Personal, Business1...)
+            foreach ($account in @(Get-ChildItem -Path "$root\Software\Microsoft\OneDrive\Accounts" -ErrorAction SilentlyContinue)) {
+                $od = Get-ItemProperty -Path $account.PSPath -ErrorAction SilentlyContinue
+                if ($od -and $od.PSObject.Properties['UserFolder'] -and "$($od.UserFolder)") {
+                    & $addFolder "$($od.UserFolder)" "$label's OneDrive ($($account.PSChildName))"
+                }
+            }
+        }
+        foreach ($extra in $ExtraProtectedFolders) {
+            if ("$extra".Trim()) { & $addFolder "$extra".Trim() 'Extra folder' }
+        }
+
+        $protected = @()
+        try { $protected = @((Get-MpPreference).ControlledFolderAccessProtectedFolders | Where-Object { $_ } | ForEach-Object { ConvertTo-NormalizedDefenderPath $_ }) } catch { $protected = @() }
+        foreach ($f in $folders) {
+            if ($protected -contains $f.Norm) {
+                Write-Host "  [Defender] Controlled folder access already protects $($f.Path)  # $($f.What)" -ForegroundColor Green
+                continue
+            }
+            try {
+                Add-MpPreference -ControlledFolderAccessProtectedFolders $f.Path -ErrorAction Stop
+                Write-Host "  [Defender] Controlled folder access protects $($f.Path)  # $($f.What)" -ForegroundColor Green
+            } catch {
+                Write-Fail "[Defender] Couldn't add $($f.Path) ($($f.What)) to Controlled folder access's protected folders: $($_.Exception.Message)"
             }
         }
 
@@ -4903,6 +5092,7 @@ try {
     Invoke-Step 'dns' { Set-SecureDns }
     Invoke-Step 'hostsfile' { Repair-HostsFile }
     Invoke-Step 'scriptprotect' { Set-ScriptProtection }
+    Invoke-Step 'taskhistory' { Enable-TaskHistory }
     Invoke-Step 'cis-office' { Set-OfficeHardening }
     Invoke-Step 'firewall' { Enable-FirewallProfile }
     Invoke-Step 'lnkprotect' { Set-ShortcutProtection }
