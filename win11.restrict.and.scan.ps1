@@ -1261,7 +1261,10 @@ function Set-SecurityRegistry {
 # DNS may also have trouble. VPN adapters aren't changed, so a VPN's own DNS
 # still works. To undo on one adapter:
 #   Set-DnsClientServerAddress -InterfaceIndex <n> -ResetServerAddresses
-# Check DoH is in use: Get-DnsClientDohServerAddress, or https://on.quad9.net
+# Check DoH: Settings > Network & internet > (adapter) > DNS server assignment
+# shows "DNS over HTTPS: On" for each server; while browsing,
+#   Get-NetTCPConnection -RemoteAddress 9.9.9.9 -RemotePort 443
+# shows Windows' encrypted connection to Quad9.
 # ---------------------------------------------------------------
 function Set-SecureDns {
     Set-StrictMode -Version Latest
@@ -1303,14 +1306,36 @@ function Set-SecureDns {
     if ($adapters.Count -eq 0) {
         Write-Fail "[DNS] No physical network adapters found; DNS servers not set"
     }
+    $dohChanged = $false
     foreach ($adapter in $adapters) {
+        # DoH for each of this adapter's servers: what Settings > Network >
+        # (adapter) > DNS server assignment shows as "DNS over HTTPS: On
+        # (automatic template)" with "Fallback to plaintext" on. Without it
+        # Settings shows Off, and DoH relies on the AutoUpgrade above.
+        # DohFlags: 1 = template from the list above, 4 = fallback to plain DNS.
+        # Set before the servers, so setting them makes Windows read it; a
+        # restart makes sure.
+        $dohFlags = 1 -bor 4
+        $ifKey = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($adapter.InterfaceGuid)\DohInterfaceSettings"
+        foreach ($server in $DnsServers) {
+            $family = if ($server.Address -like '*:*') { 'Doh6' } else { 'Doh' }
+            $dohKey = "$ifKey\$family\$($server.Address)"
+            try {
+                $was = Get-RegistryValueState -Path $dohKey -Name 'DohFlags'
+                Set-TrackedValue -Path $dohKey -Name 'DohFlags' -Value $dohFlags -Type QWord
+                if ($null -eq $was -or "$($was.Data)" -ne "$dohFlags") { $dohChanged = $true }
+            } catch {
+                Write-Fail "[DoH] Couldn't turn on DNS over HTTPS for $($server.Address) on $($adapter.Name): $($_.Exception.Message)"
+            }
+        }
         try {
             Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses $dnsAddresses -ErrorAction Stop
-            Write-Host "  [DNS] $($adapter.Name): $($dnsAddresses -join ', ')" -ForegroundColor Green
+            Write-Host "  [DNS] $($adapter.Name): $($dnsAddresses -join ', ') (DNS over HTTPS on, plain DNS as fallback)" -ForegroundColor Green
         } catch {
             Write-Fail "[DNS] Couldn't set DNS servers on $($adapter.Name): $($_.Exception.Message)"
         }
     }
+    if ($dohChanged) { Add-RestartReason 'DNS over HTTPS was turned on for the network adapters' }
     # Forget answers from the old servers so the new ones are used straight away
     Clear-DnsClientCache -ErrorAction SilentlyContinue
 }
