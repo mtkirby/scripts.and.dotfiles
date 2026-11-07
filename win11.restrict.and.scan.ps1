@@ -2,7 +2,7 @@
 .SYNOPSIS
     VERSION 2026-11-07
 
-    Keeps a Windows 11 PC used by someone who isn't technical safe from scams
+    Keeps a Windows 11 PC used by non-techical person who is a target of scams
     and malware. Task Scheduler runs it every Friday at 20:00, and the Start
     menu entry "My OS Refresher" runs it any time. Each run:
     - Locks down Chrome and Edge: CIS policies, an extension allowlist, no
