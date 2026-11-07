@@ -2,7 +2,7 @@
 .SYNOPSIS
     VERSION 2026-11-07
 
-    Keeps a Windows 11 PC used by non-techical person who is a target of scams
+    Keeps a Windows 11 PC used by non-technical person who is a target of scams
     and malware. Task Scheduler runs it every Friday at 20:00, and the Start
     menu entry "My OS Refresher" runs it any time. Each run:
     - Locks down Chrome and Edge: CIS policies, an extension allowlist, no
@@ -41,14 +41,15 @@
                           the remote access programs' sites blocked (see
                           remotetools),
                           notifications and pop-ups blocked for every site,
-                          potentially dangerous downloads blocked, search
+                          potentially dangerous downloads blocked, PDFs kept in
+                          Chrome's own viewer (not Acrobat), search
                           locked to Google and startup to a New Tab (obeyed
                           only on a managed PC). An installed extension
                           that is not approved is removed. A failure only if a
                           copy could not be removed.
        - edge:            Edge's Scareware blocker on, and the same
-                          notification, pop-up, download and site blocks as
-                          Chrome
+                          notification, pop-up, download and site blocks, and
+                          PDFs in its own viewer, as Chrome
        - cis-services:    unneeded services disabled
        - quickassist:     Quick Assist removed (the app, the provisioned package
                           and the Windows capability). Noted when it was
@@ -80,6 +81,12 @@
                           after an earlier run turned it on
        - cis-office:      Microsoft Office (CIS Microsoft Office Enterprise
                           Benchmark v1.2.0, Level 1) for every user account
+       - acrobat:         Adobe Acrobat and Reader locked down (Protected
+                          Mode with AppContainer, Protected View for all
+                          files, Enhanced Security, no privileged locations,
+                          updates on, JavaScript off unless
+                          $AdobeDisableJavaScript is $false), whether or not
+                          it is installed yet
        - firewall:        a Windows Firewall profile that is off is turned back
                           on and noted. A failure only if it could not be turned on
        - lnkprotect:      shortcut extensions shown, mshta/regsvr32/certutil
@@ -306,6 +313,16 @@ $JsOptimizerAllowedSites = @(
 #   2 = they open in Protected View and can be edited
 # ---------------------------------------------------------------
 $OfficeBlockedFileBehavior = 1
+
+# ---------------------------------------------------------------
+# Adobe Acrobat and Reader: JavaScript in PDFs (see Section 7b)
+#   $true  = off. Malicious PDFs mostly attack Acrobat through JavaScript.
+#            Fillable forms still open and can be typed in, but ones that
+#            add up totals or check what's typed (tax and government forms)
+#            stop doing so.
+#   $false = on (Adobe's default)
+# ---------------------------------------------------------------
+$AdobeDisableJavaScript = $true
 
 # ---------------------------------------------------------------
 # Programs allowed to change files in folders that Controlled folder access
@@ -1201,6 +1218,14 @@ function Set-ChromeHardening {
     # for a moment. Depends on Safe Browsing (1.2.2) being on.
     Set-ChromePolicy -Name 'DownloadRestrictions' -Value 2 -Description 'Block potentially dangerous downloads'
 
+    # Extra (not CIS): PDFs open in Chrome's own viewer
+    # Chrome's PDF viewer runs in Chrome's sandbox and is patched with Chrome
+    # every few weeks, so a PDF from a web page (or a scam page) doesn't open
+    # in Acrobat (Section 7b). 0 = view in Chrome, 1 = download and open
+    # outside Chrome. A saved PDF opened from a folder uses the default PDF
+    # app as usual.
+    Set-ChromePolicy -Name 'AlwaysOpenPdfExternally' -Value 0 -Description "Open PDFs in Chrome's own viewer"
+
     # 2.12 Allow proceeding from the SSL warning page - Disabled
     # Prevents users from bypassing SSL/TLS certificate warnings.
     # The "Advanced > Proceed anyway" link disappears from certificate error pages.
@@ -1419,6 +1444,7 @@ function Set-EdgeHardening {
     & $set 'DefaultNotificationsSetting' 2 'No site may show notifications'
     & $set 'DefaultPopupsSetting' 2 'Block pop-ups'
     & $set 'DownloadRestrictions' 2 'Block potentially dangerous downloads'
+    & $set 'AlwaysOpenPdfExternally' 0 "Open PDFs in Edge's own viewer"
     # The same sites as Chrome's URLBlocklist: Chrome Remote Desktop and the
     # remote access programs' sites
     Set-ChromePolicyList -Browser Edge -Name 'URLBlocklist' -Values (@('remotedesktop.google.com') + @(Get-BlockedRemoteAccessSite)) -Description 'Block Chrome Remote Desktop and remote access program sites'
@@ -2508,6 +2534,95 @@ function Set-OfficeHardening {
         } else {
             Write-Fail "[Office] ${label}: $($errors.Count) of $($officeUserSettings.Count) settings failed, first: $($errors[0])"
         }
+    }
+}
+
+# ---------------------------------------------------------------
+# SECTION 7b: Adobe Acrobat and Acrobat Reader (not CIS; from Adobe's
+# lockable preferences and the DISA Acrobat Reader DC STIG)
+# Set under FeatureLockDown, which locks them: the matching options in
+# Edit > Preferences are greyed out. Set whether or not Acrobat is
+# installed, so a copy installed later is covered from its first start.
+# Restart Acrobat to apply.
+#   Protected Mode (bProtectedMode): PDFs open in a sandbox, so an exploit
+#     in a PDF can't reach the rest of the PC. On by default; locked on.
+#   AppContainer (bEnableProtectedModeAppContainer): a tighter Windows
+#     sandbox around Protected Mode.
+#   Protected View for all files (iProtectedView 2): every PDF opens
+#     read-only, in the sandbox, until "Enable All Features" is clicked.
+#   Enhanced Security (bEnhancedSecurityStandalone, ...InBrowser): blocks a
+#     PDF reaching other files, the network or other sites' data.
+#   No privileged locations (bDisableTrustedFolders, bDisableTrustedSites):
+#     no folder or site can be added that skips the protections above.
+#   Updates (bUpdater 1): Acrobat's own updates can't be turned off. A 0
+#     found there is reported. winget (patchwinget) also updates it.
+#   JavaScript off (bDisableJavaScript), if $AdobeDisableJavaScript at the
+#     top is $true: the usual way malicious PDFs attack Acrobat.
+# Section 6's ASR rule stops Acrobat starting other programs, and Section 1
+# keeps PDFs from the web in the browser's own PDF viewer.
+# The registry values are in the undo file.
+# ---------------------------------------------------------------
+function Set-AcrobatHardening {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Applying Adobe Acrobat Protections' '.'
+
+    $installed = @(foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
+            Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {
+                $v = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+                if ($v -and $v.PSObject.Properties['DisplayName'] -and "$($v.DisplayName)" -match '^Adobe Acrobat') { "$($v.DisplayName)" }
+            }
+        }) | Sort-Object -Unique
+    if ($installed) {
+        Write-Host "  [Acrobat] Installed: $($installed -join ', ')" -ForegroundColor Cyan
+    } else {
+        Write-Host '  [Acrobat] Not installed; the settings are set for when it is' -ForegroundColor DarkGray
+    }
+
+    $settings = [ordered]@{
+        'bProtectedMode'                   = 1
+        'bEnableProtectedModeAppContainer' = 1
+        'iProtectedView'                   = 2
+        'bEnhancedSecurityStandalone'      = 1
+        'bEnhancedSecurityInBrowser'       = 1
+        'bDisableTrustedFolders'           = 1
+        'bDisableTrustedSites'             = 1
+        'bUpdater'                         = 1
+    }
+    # Reader and Acrobat (Standard/Pro) read different keys, and the 32-bit
+    # versions read the WOW6432Node copy (where Adobe's documentation puts
+    # them). Writing all four covers whichever is installed.
+    $keys = foreach ($policies in 'HKLM:\SOFTWARE\Policies\Adobe', 'HKLM:\SOFTWARE\WOW6432Node\Policies\Adobe') {
+        foreach ($product in 'Acrobat Reader', 'Adobe Acrobat') { "$policies\$product\DC\FeatureLockDown" }
+    }
+    $errors = [System.Collections.Generic.List[string]]::new()
+    foreach ($key in $keys) {
+        try {
+            $updater = Get-RegistryValueState -Path $key -Name 'bUpdater'
+            if ($updater -and "$($updater.Data)" -eq '0') {
+                Write-Fail "[Acrobat] Updates were turned off by policy ($key bUpdater = 0); turned back on. If you didn't turn them off, find out what did"
+            }
+            foreach ($name in $settings.Keys) { Set-TrackedValue -Path $key -Name $name -Value $settings[$name] }
+            if ($AdobeDisableJavaScript) {
+                Set-TrackedValue -Path $key -Name 'bDisableJavaScript' -Value 1
+            } else {
+                Remove-TrackedValue -Path $key -Name 'bDisableJavaScript'
+            }
+        } catch {
+            $errors.Add("${key}: $($_.Exception.Message)")
+        }
+    }
+    if ($errors.Count) {
+        Write-Fail "[Acrobat] $($errors.Count) of $(@($keys).Count) policy keys failed, first: $($errors[0])"
+        return
+    }
+    Write-Host '  [Acrobat] Protected Mode with AppContainer, Protected View for all files, Enhanced Security, no privileged locations, updates on' -ForegroundColor Green
+    if ($AdobeDisableJavaScript) {
+        Write-Host '  [Acrobat] JavaScript off (forms that calculate or check what is typed stop doing so; $AdobeDisableJavaScript at the top)' -ForegroundColor Green
+    } else {
+        Write-Host '  [Acrobat] JavaScript left on ($AdobeDisableJavaScript at the top)' -ForegroundColor Yellow
     }
 }
 
@@ -5944,6 +6059,7 @@ try {
     Invoke-Step 'scriptprotect' { Set-ScriptProtection }
     Invoke-Step 'taskhistory' { Enable-TaskHistory }
     Invoke-Step 'cis-office' { Set-OfficeHardening }
+    Invoke-Step 'acrobat' { Set-AcrobatHardening }
     Invoke-Step 'firewall' { Enable-FirewallProfile }
     Invoke-Step 'lnkprotect' { Set-ShortcutProtection }
     Invoke-Step 'explorerview' { Set-ExplorerView }

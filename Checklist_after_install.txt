@@ -11,3 +11,4 @@ pc manager
 zoom
 printer
 wifi router
+Open pdf
