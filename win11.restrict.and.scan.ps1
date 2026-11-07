@@ -58,8 +58,9 @@
        - defendersettings: real-time, cloud, sample submission, potentially
                           unwanted apps, network protection, Dev Drive,
                           Controlled folder access (also protecting each
-                          user's Downloads, OneDrive, moved folders and
-                          $ExtraProtectedFolders); checks Tamper protection
+                          user's Desktop, Downloads, OneDrive and
+                          $ExtraProtectedFolders, without duplicating
+                          Windows' own entries); checks Tamper protection
        - reputation:      App & browser control > Reputation-based protection:
                           SmartScreen (warn and prevent bypass), Edge
                           SmartScreen, phishing protection, Store apps
@@ -275,19 +276,17 @@ $ControlledFolderAllowedApps = @(
 
 # ---------------------------------------------------------------
 # More folders for Controlled folder access to protect (see Section 10),
-# such as data drives and backup folders. Each user's Desktop, Documents,
-# Pictures, Videos, Music, Downloads and OneDrive are added already. Only
-# programs Windows trusts, or ones in $ControlledFolderAllowedApps above,
-# can change files in them; a whole drive means everything on it, including
-# programs installed there that save to their own folder (game libraries).
-# A drive or folder that isn't there (an unplugged USB drive) is skipped,
-# and a CD/DVD drive is never added. Removing one from this list doesn't
-# unprotect it: Windows Security > Ransomware protection > Protected folders.
+# such as a backup folder or a data folder on another drive. Each user's
+# Documents, Pictures, Videos, Music and Favorites are protected by Windows,
+# and their Desktop, Downloads and OneDrive are added already. Only programs
+# Windows trusts, or ones in $ControlledFolderAllowedApps above, can change
+# files in them. A whole drive (D:\) doesn't work: protect a folder on it.
+# A folder that isn't there (on an unplugged USB drive) is skipped. Removing
+# one from this list doesn't unprotect it: Windows Security > Ransomware
+# protection > Protected folders.
 # ---------------------------------------------------------------
 $ExtraProtectedFolders = @(
-    'D:\'
-    'E:\'
-    'F:\'
+    # 'E:\Backups'
 )
 
 # ---------------------------------------------------------------
@@ -2619,10 +2618,10 @@ function Reset-ExploitProtection {
 #     antivirus is allowed on Dev Drives. Needs Windows 11 23H2 or later.
 #   Controlled folder access - only trusted programs can change files in
 #     Documents, Pictures, Videos, Music, Desktop and Favorites, which stops
-#     ransomware encrypting them. Also added: each user's Desktop, Documents,
-#     Pictures, Videos, Music and Downloads where they really are (in case
-#     they've been moved, e.g. into OneDrive), each OneDrive folder, and
-#     $ExtraProtectedFolders from the top. Unknown programs that save there
+#     ransomware encrypting them. Also added: each user's Desktop and
+#     Downloads where they really are (in case they've been moved, e.g. into
+#     OneDrive), each OneDrive folder, and $ExtraProtectedFolders from the
+#     top. Copies of Windows' own entries are removed, so none shows twice. Unknown programs that save there
 #     are blocked (Windows shows a notification); allow them with
 #     $ControlledFolderAllowedApps at the top.
 #   Tamper protection - stops anything, including malware with admin rights,
@@ -2714,18 +2713,22 @@ function Set-DefenderSetting {
             }
         }
 
-        # More protected folders. Windows protects each user's Documents,
-        # Pictures, Videos, Music, Desktop and Favorites at C:\Users\<name>\...
-        # already. Added here, wherever they really are:
-        #   - those folders, plus Downloads, for each user. A folder that's
-        #     been moved (OneDrive's backup of Desktop, Documents and Pictures,
-        #     or Properties > Location) isn't covered by Windows' own entry.
-        #   - each user's OneDrive folder, which OneDrive would otherwise sync
+        # More protected folders. Windows already protects each user's
+        # Documents, Pictures, Videos, Music and Favorites, and their Public
+        # equivalents, following them if they've been moved (into OneDrive,
+        # say). Those built-in entries aren't in Get-MpPreference, so adding
+        # them again shows each one twice in Windows Security; they're left
+        # to Windows, and copies an earlier run added are removed. Added here,
+        # for each user, wherever they really are:
+        #   - Desktop, if it's been moved: Windows protects it in its usual
+        #     place but doesn't follow it
+        #   - Downloads, which Windows doesn't protect
+        #   - each OneDrive folder, which OneDrive would otherwise sync
         #     encrypted files from
         #   - $ExtraProtectedFolders from the top of the script
-        # The Default profile is skipped: it has no files. Nothing is removed
-        # from the list, since an extra protected folder only adds protection.
+        # The Default profile is skipped: it has no files.
         $folders = [System.Collections.Generic.List[pscustomobject]]::new()
+        $builtIn = [System.Collections.Generic.List[string]]::new()
         $addFolder = {
             param([string]$Path, [string]$What)
             if ($Path -notmatch '^[A-Za-z]:\\|^\\\\') {
@@ -2733,33 +2736,33 @@ function Set-DefenderSetting {
                 return
             }
             if ($Path -match '^[A-Za-z]:\\?$') {
-                $Path = $Path.Substring(0, 2) + '\'
-                # An optical drive has nothing to protect
-                $drive = New-Object System.IO.DriveInfo $Path
-                if ("$($drive.DriveType)" -eq 'CDRom') {
-                    Write-Host "  [Defender] $What ($Path) is a CD/DVD drive; not protected" -ForegroundColor DarkGray
-                    return
-                }
+                Write-Host "  [Defender] $What ($Path) is a whole drive, which Controlled folder access doesn't take; protect a folder on it" -ForegroundColor Yellow
+                return
             }
             if (-not (Test-Path -LiteralPath $Path)) {
                 Write-Host "  [Defender] $What ($Path) doesn't exist; not protected" -ForegroundColor DarkGray
                 return
             }
             $norm = ConvertTo-NormalizedDefenderPath $Path
+            if ($builtIn -contains $norm) { return }
             if (@($folders | Where-Object { $_.Norm -eq $norm }).Count -eq 0) {
                 $folders.Add([pscustomobject]@{ Path = $Path; Norm = $norm; What = $What })
             }
         }
-        # User Shell Folders value names, and where each is if not moved
+        # User Shell Folders value names, where each is if not moved, and
+        # what Windows protects itself: Anywhere (where it is, moved or not),
+        # Usual (only in its usual place) or None
         $knownFolders = [ordered]@{
-            'Desktop'                                = @{ What = 'Desktop'; Default = 'Desktop' }
-            'Personal'                               = @{ What = 'Documents'; Default = 'Documents' }
-            'My Pictures'                            = @{ What = 'Pictures'; Default = 'Pictures' }
-            'My Video'                               = @{ What = 'Videos'; Default = 'Videos' }
-            'My Music'                               = @{ What = 'Music'; Default = 'Music' }
-            '{374DE290-123F-4565-9164-39C4925E467B}' = @{ What = 'Downloads'; Default = 'Downloads' }
+            'Personal'                               = @{ What = 'Documents'; Default = 'Documents'; BuiltIn = 'Anywhere' }
+            'My Pictures'                            = @{ What = 'Pictures'; Default = 'Pictures'; BuiltIn = 'Anywhere' }
+            'My Video'                               = @{ What = 'Videos'; Default = 'Videos'; BuiltIn = 'Anywhere' }
+            'My Music'                               = @{ What = 'Music'; Default = 'Music'; BuiltIn = 'Anywhere' }
+            'Favorites'                              = @{ What = 'Favorites'; Default = 'Favorites'; BuiltIn = 'Anywhere' }
+            'Desktop'                                = @{ What = 'Desktop'; Default = 'Desktop'; BuiltIn = 'Usual' }
+            '{374DE290-123F-4565-9164-39C4925E467B}' = @{ What = 'Downloads'; Default = 'Downloads'; BuiltIn = 'None' }
         }
         $profileList = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+        $userFolders = [System.Collections.Generic.List[pscustomobject]]::new()
         Invoke-InEachUserHive {
             param($root, $label)
             $sid = ($root -split '\\')[-1] -replace '^CIS_', ''
@@ -2768,32 +2771,76 @@ function Set-DefenderSetting {
             if (-not $profilePath) { return }
             $usf = Get-ItemProperty -Path "$root\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -ErrorAction SilentlyContinue
             foreach ($name in $knownFolders.Keys) {
-                $raw = if ($usf -and $usf.PSObject.Properties[$name]) { "$($usf.$name)" } else { "%USERPROFILE%\$($knownFolders[$name].Default)" }
+                $k = $knownFolders[$name]
+                $default = Join-Path $profilePath $k.Default
+                $raw = if ($usf -and $usf.PSObject.Properties[$name]) { "$($usf.$name)" } else { "%USERPROFILE%\$($k.Default)" }
                 # %USERPROFILE% is that user's folder, not the one running this
                 $path = [Environment]::ExpandEnvironmentVariables(($raw -ireplace '%USERPROFILE%', $profilePath.Replace('$', '$$')))
-                & $addFolder $path "$label's $($knownFolders[$name].What)"
+                if ($k.BuiltIn -ne 'None') { $builtIn.Add((ConvertTo-NormalizedDefenderPath $default)) }
+                if ($k.BuiltIn -eq 'Anywhere') {
+                    $builtIn.Add((ConvertTo-NormalizedDefenderPath $path))
+                } else {
+                    # Added unless it's the built-in entry (a Desktop that hasn't moved)
+                    $userFolders.Add([pscustomobject]@{ Path = $path; What = "$label's $($k.What)" })
+                }
             }
             # OneDrive: one folder per signed-in account (Personal, Business1...)
             foreach ($account in @(Get-ChildItem -Path "$root\Software\Microsoft\OneDrive\Accounts" -ErrorAction SilentlyContinue)) {
                 $od = Get-ItemProperty -Path $account.PSPath -ErrorAction SilentlyContinue
                 if ($od -and $od.PSObject.Properties['UserFolder'] -and "$($od.UserFolder)") {
-                    & $addFolder "$($od.UserFolder)" "$label's OneDrive ($($account.PSChildName))"
+                    $userFolders.Add([pscustomobject]@{ Path = "$($od.UserFolder)"; What = "$label's OneDrive ($($account.PSChildName))" })
                 }
             }
         }
+        foreach ($p in 'Documents', 'Pictures', 'Videos', 'Music') {
+            $builtIn.Add((ConvertTo-NormalizedDefenderPath (Join-Path "$env:PUBLIC" $p)))
+        }
+        foreach ($u in $userFolders) { & $addFolder $u.Path $u.What }
         foreach ($extra in $ExtraProtectedFolders) {
             if ("$extra".Trim()) { & $addFolder "$extra".Trim() 'Extra folder' }
         }
 
-        $protected = @()
-        try { $protected = @((Get-MpPreference).ControlledFolderAccessProtectedFolders | Where-Object { $_ } | ForEach-Object { ConvertTo-NormalizedDefenderPath $_ }) } catch { $protected = @() }
+        # What's on the list now, beyond Windows' built-in entries. A copy of
+        # a built-in entry, or a second copy of anything, is removed.
+        $current = @()
+        try { $current = @((Get-MpPreference).ControlledFolderAccessProtectedFolders | Where-Object { $_ }) } catch { $current = @() }
+        $seen = [System.Collections.Generic.List[string]]::new()
+        $removedAny = $false
+        foreach ($entry in $current) {
+            $norm = ConvertTo-NormalizedDefenderPath "$entry"
+            $why = if ($builtIn -contains $norm) { 'Windows protects it already' } elseif ($seen -contains $norm) { 'it was listed twice' } else { '' }
+            if (-not $why) {
+                $seen.Add($norm)
+                continue
+            }
+            try {
+                Remove-MpPreference -ControlledFolderAccessProtectedFolders "$entry" -ErrorAction Stop
+                $removedAny = $true
+                Write-Host "  [Defender] Removed duplicate protected folder $entry ($why)" -ForegroundColor Green
+            } catch {
+                Write-Fail "[Defender] Couldn't remove duplicate protected folder ${entry}: $($_.Exception.Message)"
+            }
+        }
+        # Removing one copy may have taken the other with it (Defender may
+        # ignore case), so what's left is read again before adding
+        if ($removedAny) {
+            $seen.Clear()
+            try {
+                foreach ($entry in @((Get-MpPreference).ControlledFolderAccessProtectedFolders | Where-Object { $_ })) {
+                    $seen.Add((ConvertTo-NormalizedDefenderPath "$entry"))
+                }
+            } catch {
+                Write-Verbose "couldn't re-read the protected folders: $($_.Exception.Message)"
+            }
+        }
         foreach ($f in $folders) {
-            if ($protected -contains $f.Norm) {
+            if ($seen -contains $f.Norm) {
                 Write-Host "  [Defender] Controlled folder access already protects $($f.Path)  # $($f.What)" -ForegroundColor Green
                 continue
             }
             try {
                 Add-MpPreference -ControlledFolderAccessProtectedFolders $f.Path -ErrorAction Stop
+                $seen.Add($f.Norm)
                 Write-Host "  [Defender] Controlled folder access protects $($f.Path)  # $($f.What)" -ForegroundColor Green
             } catch {
                 Write-Fail "[Defender] Couldn't add $($f.Path) ($($f.What)) to Controlled folder access's protected folders: $($_.Exception.Message)"

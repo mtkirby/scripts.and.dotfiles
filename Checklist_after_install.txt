@@ -1,0 +1,11 @@
+Make sure bitlocker recovery key is available
+Check spreadsheets and docs
+Check backups
+Check if smart app control is on
+verify dns
+scan external ip/ipv6
+check scheduled tasks
+check startup tasks
+pc manager
+zoom
+
