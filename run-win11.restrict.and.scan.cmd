@@ -9,11 +9,12 @@ rem permission prompt, or "Weekly" for /full (that one needs the prompt).
 rem If neither can be started, this runs win11.restrict.and.scan.ps1 from the
 rem folder this file is in, and Windows asks for permission.
 rem
-rem For a Desktop icon: right-click this file > Show more options > Send to >
-rem Desktop (create shortcut).
+rem To start it: right-click it > Run as administrator. Double-click opens
+rem .cmd files in Notepad once the script has run (see lnkprotect). The
+rem installer's Start menu entry "My OS Refresher" needs neither.
 rem
 rem If Windows says it "protected your PC" and won't run this, right-click the
-rem file > Properties > tick Unblock > OK, then double-click it again.
+rem file > Properties > tick Unblock > OK, then run it again.
 setlocal
 set "extra="
 set "task=\win11.restrict.and.scan\Run now"

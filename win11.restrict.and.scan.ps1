@@ -1,10 +1,29 @@
 <#
-.VERSION
-    2026-11-06
-
 .SYNOPSIS
-    Weekly Windows run: security hardening, updates, a background Defender scan,
-    health and security checks, and a report of Defender's Protection history.
+    VERSION 2026-11-07
+
+    Keeps a Windows 11 PC used by someone who isn't technical safe from scams
+    and malware. Task Scheduler runs it every Friday at 20:00, and the Start
+    menu entry "My OS Refresher" runs it any time. Each run:
+    - Locks down Chrome and Edge: CIS policies, an extension allowlist, no
+      site notifications or pop-ups (the "your PC is infected, call this
+      number" lure), risky downloads blocked, remote access sites blocked.
+    - Locks down Windows and Office: CIS settings, 16 Defender attack surface
+      reduction rules, Controlled folder access, SmartScreen, memory
+      integrity and LSA protection, firewall, UAC, DNS over HTTPS, and risky
+      file types that open in Notepad instead of running.
+    - Undoes what scams and malware change: removes Quick Assist and remote
+      access programs (AnyDesk, TeamViewer...), proxy settings, hosts file
+      entries and Defender exclusions that aren't approved.
+    - Updates Windows, Office, Store apps, winget and Chocolatey packages.
+    - Scans with Defender, Microsoft Safety Scanner and Emsisoft, and checks
+      disks, Windows' own files, BitLocker, startup entries, and unsigned
+      programs and drivers.
+    - Reports: a dated report and log in C:\ProgramData\win11.restrict.and.scan,
+      opened in Notepad, then a plain-words message saying whether to send
+      the report to the helper and whether to restart. It never restarts the
+      PC by itself, and the registry values it changes are saved to an
+      undo file (.reg).
 
 .DESCRIPTION
     Every step runs even if an earlier one fails; the summary at the end lists what failed.
@@ -18,13 +37,31 @@
     3. Hardening, re-applied every run so nothing drifts:
        - cis-chrome:      Chrome policies (CIS Google Chrome Benchmark v3.0.0), the
                           extension allowlist, the JavaScript optimizer allowlist,
-                          and Chrome Remote Desktop blocked. An installed extension
+                          and Chrome Remote Desktop blocked. Against scam pages:
+                          the remote access programs' sites blocked (see
+                          remotetools),
+                          notifications and pop-ups blocked for every site,
+                          potentially dangerous downloads blocked, search
+                          locked to Google and startup to a New Tab (obeyed
+                          only on a managed PC). An installed extension
                           that is not approved is removed. A failure only if a
                           copy could not be removed.
+       - edge:            Edge's Scareware blocker on, and the same
+                          notification, pop-up, download and site blocks as
+                          Chrome
        - cis-services:    unneeded services disabled
        - quickassist:     Quick Assist removed (the app, the provisioned package
                           and the Windows capability). Noted when it was
                           installed. A failure only if a copy could not be removed.
+       - remotetools:     AnyDesk, TeamViewer, RustDesk, UltraViewer, Splashtop,
+                          Supremo, AeroAdmin, RemotePC, LogMeIn, ScreenConnect,
+                          Zoho Assist, DWService, MeshAgent, TightVNC, RealVNC
+                          and NetSupport uninstalled silently (programs, Store
+                          apps, Chocolatey packages), leftover services
+                          disabled, running copies stopped, and copies in
+                          Downloads or on the Desktop reported. A failure for
+                          each one found, unless in $ApprovedRemoteAccessApps.
+                          Their sites are blocked in Chrome and Edge
        - smb1:            the SMB1Protocol Windows feature removed, without a
                           restart
        - cis-registry:    automatic logon and WDigest off. A saved automatic-logon
@@ -32,6 +69,10 @@
        - dns:             Quad9 / OpenDNS with DNS over HTTPS preferred
        - hostsfile:       hosts file put back to the default plus approved
                           entries, with its location and permissions checked
+       - proxy:           proxy settings removed: Windows' (each user and the
+                          PC), WinHTTP's, proxy policies for Windows, Chrome
+                          and Edge, and HTTP_PROXY-style environment
+                          variables. A failure for each one found
        - scriptprotect:   Defender ASR rules, PowerShell logging,
                           PowerShell 2.0 removed, Windows Script Host off
        - taskhistory:     Task Scheduler history on (every task's History tab),
@@ -42,7 +83,11 @@
        - firewall:        a Windows Firewall profile that is off is turned back
                           on and noted. A failure only if it could not be turned on
        - lnkprotect:      shortcut extensions shown, mshta/regsvr32/certutil
-                          firewalled, .hta opens in Notepad
+                          firewalled. Double-click opens these file types in
+                          Notepad instead of running them: hta, bat, cmd, reg,
+                          scr, js, vbs, wsf, jse, vbe, wsh, application and
+                          appref-ms; and no longer mounts disk images (iso,
+                          img, vhd, vhdx)
        - explorerview:    File Explorer shows extensions, hidden files (not
                           protected operating system files) and the full path
                           in the title bar; End task on the taskbar's
@@ -118,11 +163,11 @@
                           disk during DISM, sfc, or chkdsk
     8. protectionhistory: the last 7 days of Defender's Protection history,
                           written to the log folder
-    9. statusfile:        "PC check report.txt" on the Desktop, every run: All
-                          clear, or Needs attention with the failures, notes and
-                          restart reasons, then the Protection history. Opened
-                          in Notepad at the end. If Controlled folder access
-                          blocks the Desktop, it goes in the log folder.
+    9. statusfile:        "PC check report-<date>.txt" in the log folder, every run:
+                          All clear, or Needs attention with the failures, notes
+                          and restart reasons, then the Protection history.
+                          Opened in Notepad at the end. Not on the Desktop:
+                          Controlled folder access blocks PowerShell there.
     Then a message in plain words: no problems, or how many and who to send the
     report to ($HelperContact at the top), and Yes/No to restart when a restart
     is actually needed.
@@ -130,7 +175,7 @@
     For someone who isn't technical: run install-win11.restrict.and.scan.cmd once on their
     PC, signed in as them (their account must be an administrator). It copies
     the script to C:\Program Files\win11.restrict.and.scan, schedules it for Fridays at 20:00
-    with full scans, and puts "Check and update this PC" on their Desktop, which
+    with full scans, and puts "My OS Refresher" in their Start menu, which
     runs it with no permission prompt. See Install-Win11RestrictAndScan.
 
     Any run that changes registry values (including service startup types)
@@ -145,30 +190,31 @@
     the top of the script.
 
 .PARAMETER LogDir
-    Where the transcript, the Defender scan log and the registry undo files go.
-    Transcripts older than 30 days are deleted; undo files are kept.
+    Where the transcript, the scan logs, the reports and the registry undo
+    files go. Every run's are kept, named with the run's date and time
+    (yyyyMMdd-HHmmss), e.g. win11.restrict.and.scan-20261107-200000.log.
 
 .PARAMETER FullScan
     Full Safety Scanner and Emsisoft scans whatever the day. The weekly
     scheduled run uses it.
 
 .PARAMETER Install
-    Set up the weekly run and the Desktop shortcut for the signed-in user, then
+    Set up the weekly run and the Start menu shortcut for the signed-in user, then
     stop. install-win11.restrict.and.scan.cmd runs this.
 
 .PARAMETER Uninstall
-    Remove the scheduled tasks, the Desktop shortcut and the copy in Program
+    Remove the scheduled tasks, the Start menu shortcut and the copy in Program
     Files. Settings already applied, logs and undo files stay.
 
 .NOTES
     - Must be run as Administrator. Run it as yourself, not SYSTEM: winget only works
-      in a user session, and the report goes to your Desktop.
+      in a user session, and the report opens in Notepad on your screen.
     - Windows blocks scripts by default, so start it with -ExecutionPolicy Bypass.
     - Exit code 1 if any step failed; the summary at the end lists them.
     - Restart Chrome after the first run (or reload policies at chrome://policy).
       The PC restarts only if Yes is clicked in the message at the end, which
       offers it only when a restart is actually needed. The reasons are also in
-      the summary and the Desktop report.
+      the summary and the report.
     - Chrome policies need Chrome to read HKLM\SOFTWARE\Policies\Google\Chrome;
       check them at chrome://policy.
     - Hardening targets a stand-alone PC. On a domain, use Group Policy instead.
@@ -181,13 +227,14 @@
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win11.restrict.and.scan.ps1
 #>
 
+
 #Requires -RunAsAdministrator
 
 param(
     [string]$LogDir = (Join-Path $env:ProgramData 'win11.restrict.and.scan'),
     # Full Safety Scanner and Emsisoft scans whatever the day (the weekly run)
     [switch]$FullScan,
-    # Set up, or remove, the weekly run and the Desktop shortcut (see
+    # Set up, or remove, the weekly run and the Start menu shortcut (see
     # install-win11.restrict.and.scan.cmd); nothing else runs
     [switch]$Install,
     [switch]$Uninstall
@@ -272,6 +319,7 @@ $ControlledFolderAllowedApps = @(
     'C:\cygwin\bin\bash.exe'
     'C:\cygwin\bin\git.exe'
     'C:\Program Files\Zoom\bin\Zoom.exe'
+    'C:\Windows\System32\WinSAT.exe'  # Windows' own disk speed test (a maintenance task); writes straight to the disk
 )
 
 # ---------------------------------------------------------------
@@ -311,6 +359,18 @@ $DnsServers = @(
 # ---------------------------------------------------------------
 $ApprovedHostsEntries = @(
     # '192.168.1.10    nas.lan'  # example
+)
+
+# ---------------------------------------------------------------
+# Remote access programs to keep (see the remotetools step). Every run
+# uninstalls AnyDesk, TeamViewer, RustDesk, UltraViewer, Splashtop, Supremo,
+# AeroAdmin, RemotePC, LogMeIn, ScreenConnect, Zoho Assist, DWService,
+# MeshAgent, TightVNC, RealVNC and NetSupport: the programs tech-support
+# scams install, and blocks their sites in Chrome and Edge. List one here,
+# by that name, to keep it and its site.
+# ---------------------------------------------------------------
+$ApprovedRemoteAccessApps = @(
+    # 'TeamViewer'
 )
 
 # ---------------------------------------------------------------
@@ -386,7 +446,7 @@ function Get-HelperName {
     if ("$HelperContact".Trim()) { "$HelperContact".Trim() } else { 'the person who set up this PC' }
 }
 
-# One place for "a restart is needed", so the summary, the Desktop status file
+# One place for "a restart is needed", so the summary, the status file
 # and the popup stay the same. Does not restart the PC.
 function Add-RestartReason {
     param([Parameter(Mandatory)][string]$Message)
@@ -568,8 +628,9 @@ function Save-RegistryUndo {
         'win11.restrict.and.scan.ps1 sets them again on its next run: take the setting out of the'
         'script (or stop running it) first.'
         ''
-        'To use: double-click this file, or run  reg import "<this file>"  as'
-        'Administrator, then restart Windows (and Chrome).'
+        'To use: run  reg import "<this file>"  as Administrator, then restart'
+        'Windows (and Chrome). Double-clicking a .reg file opens it in Notepad'
+        '(see lnkprotect).'
         '  - HKEY_USERS\S-1-... entries are other user accounts; each only applies'
         '    while that user is signed in.'
         '  - HKEY_USERS\CIS_Default entries are the Default profile (for new accounts);'
@@ -618,13 +679,16 @@ function Set-ChromePolicy {
 
 # List policies are a subkey with values named 1, 2, 3... The subkey is
 # rebuilt each run so entries removed from the script are removed from Chrome.
+# Edge's list policies work the same way (-Browser Edge).
 function Set-ChromePolicyList {
     param(
         [Parameter(Mandatory)][string]$Name,
         [string[]]$Values = @(),
-        [string]$Description
+        [string]$Description,
+        [ValidateSet('Chrome', 'Edge')][string]$Browser = 'Chrome'
     )
-    $path = "HKLM:\SOFTWARE\Policies\Google\Chrome\$Name"
+    $root = if ($Browser -eq 'Edge') { 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' } else { 'HKLM:\SOFTWARE\Policies\Google\Chrome' }
+    $path = "$root\$Name"
     # The old entries, for the undo file
     $before = @{}
     if (Test-Path $path) {
@@ -641,7 +705,36 @@ function Set-ChromePolicyList {
     }
     $names = @($before.Keys) + @((Get-Item -LiteralPath $path).GetValueNames()) | Sort-Object -Unique
     foreach ($n in $names) { Add-RegistryUndo -Path $path -Name $n -Before $before[$n] }
-    Write-Host "  [Chrome] $Name = [$($Values -join ', ')]  # $Description" -ForegroundColor Green
+    Write-Host "  [$Browser] $Name = [$($Values -join ', ')]  # $Description" -ForegroundColor Green
+}
+
+# The websites of the remote access programs the remotetools step removes,
+# blocked in Chrome and Edge (URLBlocklist) so a scammer can't talk someone
+# into downloading one again. A site also blocks its subdomains; a path
+# blocks that part of a site. Not blocked for a program in
+# $ApprovedRemoteAccessApps.
+$RemoteAccessSites = [ordered]@{
+    'AnyDesk'       = @('anydesk.com')
+    'TeamViewer'    = @('teamviewer.com')
+    'RustDesk'      = @('rustdesk.com', 'github.com/rustdesk')
+    'UltraViewer'   = @('ultraviewer.net')
+    'Splashtop'     = @('splashtop.com')
+    'Supremo'       = @('supremocontrol.com')
+    'AeroAdmin'     = @('aeroadmin.com')
+    'RemotePC'      = @('remotepc.com')
+    'LogMeIn'       = @('logmein.com', 'logmein123.com')
+    'ScreenConnect' = @('screenconnect.com')
+    'Zoho Assist'   = @('assist.zoho.com', 'join.zoho.com')
+    'DWService'     = @('dwservice.net')
+    'MeshAgent'     = @('meshcentral.com')
+    'TightVNC'      = @('tightvnc.com')
+    'RealVNC'       = @('realvnc.com')
+    'NetSupport'    = @('netsupportmanager.com', 'netsupportsoftware.com')
+}
+function Get-BlockedRemoteAccessSite {
+    foreach ($app in $RemoteAccessSites.Keys) {
+        if ($ApprovedRemoteAccessApps -notcontains $app) { $RemoteAccessSites[$app] }
+    }
 }
 
 # The extensions installed in every user's Chrome profiles, one object per
@@ -820,6 +913,42 @@ function Get-DefenderMode {
 #   Aimed at USB worms such as Raspberry Robin, whose shortcuts on a stick
 #   look like its folders. Signed installers and well-known tools on USB
 #   still run; copy anything else to the PC first.
+# LSASS: programs can't read the memory of lsass.exe, which holds signed-in
+#   users' credentials (what Mimikatz and procdump-style dumps do). A backup
+#   for LSA protection (coreisolation), which does the same while it's
+#   running; this covers a start when it isn't. It shows no pop-up when it
+#   blocks; blocks are in Protection history.
+# Scripts launching downloads: a .js or .vbs script can't download a program
+#   and start it (the email-attachment dropper). A backup for Windows Script
+#   Host being off (Section 6) and those files opening in Notepad (Section 8).
+# WMI persistence: programs can't create WMI event subscriptions, which
+#   fileless malware uses to start again after a restart without anything in
+#   the usual startup places. winstartupcheck looks for existing ones. This
+#   rule can't be given exceptions.
+# Vulnerable drivers: programs can't save a known-vulnerable signed driver
+#   to disk; attackers load one to switch off security, LSA protection
+#   included. The vulnerable driver blocklist (coreisolation) stops one
+#   loading; this stops it arriving.
+# Copied system tools: copies or impostors of Windows programs (certutil
+#   copied to a temp folder or renamed) can't run, so they can't get round
+#   rules aimed at the real ones, such as Section 8's firewall rules.
+#   mywinprocsigs looks for them afterwards. Newer than the others; needs a
+#   current Defender platform (patchmssigs). A portable tool that brings its
+#   own copy of a Windows program could be blocked; it shows in Protection
+#   history.
+# Adobe Reader: Adobe Reader and Acrobat can't start other programs, which a
+#   booby-trapped PDF does to run its payload. Does nothing if neither is
+#   installed. A link in a PDF may fail to open when the browser isn't
+#   already running (the browser would be Reader's child); it shows in
+#   Protection history.
+# Ransomware: before a program runs, Defender's cloud checks whether it
+#   looks like ransomware, and blocks it unless it's on Microsoft's trusted
+#   list or widely seen. The prevalence rule above already blocks most of
+#   these; this one judges behaviour, so it also catches a signed one (a
+#   stolen certificate). Controlled folder access (Section 10) is the next
+#   line, while a program runs. Rarely, a tool that rewrites many files
+#   (encryption, backup, bulk renaming) is blocked; it shows in Protection
+#   history. Needs cloud-delivered protection.
 $asrRules = [ordered]@{
     '5beb7efe-fd9a-4556-801d-275e5ffc04cc' = 'Block execution of potentially obfuscated scripts'
     '01443614-cd74-433a-b99e-2ecdc07bfc25' = 'Block executables unless they meet prevalence, age or trusted list criteria'
@@ -830,6 +959,13 @@ $asrRules = [ordered]@{
     '26190899-1602-49e8-8b27-eb1d0a1ce869' = 'Block Office communication application (Outlook) from creating child processes'
     'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550' = 'Block executable content from email client and webmail'
     'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4' = 'Block untrusted and unsigned processes that run from USB'
+    '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2' = 'Block credential stealing from the Windows local security authority subsystem (lsass.exe)'
+    'd3e037e1-3eb8-44c8-a917-57927947596d' = 'Block JavaScript or VBScript from launching downloaded executable content'
+    'e6db77e5-3df2-4cf1-b95a-636979351e5b' = 'Block persistence through WMI event subscription'
+    '56a863a9-875e-4185-98a7-b882c64b5ce5' = 'Block abuse of exploited vulnerable signed drivers'
+    'c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb' = 'Block use of copied or impersonated system tools'
+    '7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c' = 'Block Adobe Reader from creating child processes'
+    'c1db55ab-c21a-4637-bb3f-a12568109d35' = 'Use advanced protection against ransomware'
 }
 
 # ---------------------------------------------------------------
@@ -1053,14 +1189,17 @@ function Set-ChromeHardening {
     Set-ChromePolicyList -Name 'ExtensionInstallAllowlist' -Values $allowIds -Description 'Approved extensions'
     Set-ChromePolicyList -Name 'ExtensionInstallBlocklist' -Values @('*') -Description 'Block every extension not on the allowlist'
 
-    # 2.11 Allow download restrictions - Block malicious downloads
-    # Blocks downloads flagged as malicious by Safe Browsing.
+    # 2.11 Allow download restrictions - Block potentially dangerous downloads
     # Values: 0 = no restrictions, 1 = block dangerous files, 2 = block potentially
     # dangerous files, 3 = block all downloads, 4 = block malicious downloads.
-    # 4 only blocks files Safe Browsing has identified as malware, so legitimate
-    # but uncommon files (e.g. new installers) still download, with a warning.
-    # Depends on Safe Browsing (1.2.2) being on.
-    Set-ChromePolicy -Name 'DownloadRestrictions' -Value 4 -Description 'Block malicious downloads'
+    # CIS accepts 4, which only blocks files Safe Browsing knows are malware, so
+    # a brand-new scam installer still downloads. 2 also blocks files of
+    # dangerous types (programs .exe/.msi, scripts .js/.bat, disk images .iso)
+    # that aren't widely known to be safe, which is what a scam has the user
+    # download. Common installers from big vendors still download. To get a
+    # program Chrome blocks: download it in another browser, or set this to 4
+    # for a moment. Depends on Safe Browsing (1.2.2) being on.
+    Set-ChromePolicy -Name 'DownloadRestrictions' -Value 2 -Description 'Block potentially dangerous downloads'
 
     # 2.12 Allow proceeding from the SSL warning page - Disabled
     # Prevents users from bypassing SSL/TLS certificate warnings.
@@ -1141,7 +1280,9 @@ function Set-ChromeHardening {
     # computers, which the policies above don't cover. Chrome shows "blocked by
     # your organization" there. This policy blocks any site; add more patterns here
     # (e.g. 'example.com' blocks that domain and its subdomains).
-    Set-ChromePolicyList -Name 'URLBlocklist' -Values @('remotedesktop.google.com') -Description 'Block the Chrome Remote Desktop website'
+    # Also blocked: the sites of the remote access programs the remotetools
+    # step removes ($RemoteAccessSites), so they can't be downloaded again.
+    Set-ChromePolicyList -Name 'URLBlocklist' -Values (@('remotedesktop.google.com') + @(Get-BlockedRemoteAccessSite)) -Description 'Block Chrome Remote Desktop and remote access program sites'
 
     # 3.1.2 Default geolocation setting - Do not allow
     # Blocks sites from accessing physical location by default.
@@ -1149,6 +1290,22 @@ function Set-ChromeHardening {
     # allowed to ask, so "near me" searches and map sites fall back to rough,
     # IP-based location or a typed address.
     Set-ChromePolicy -Name 'DefaultGeolocationSetting' -Value 2 -Description 'Block geolocation by default'
+
+    # Extra (not CIS): Notifications - Blocked for every site
+    # A site allowed to show notifications can pop up "Your PC is infected,
+    # call Microsoft support" in the corner of the screen at any time, even
+    # with the site closed. That is how most tech-support scams reach people
+    # now. Values: 1 = allow, 2 = block, 3 = ask. With 2 sites can't even ask,
+    # and permission given before is ignored. Web mail and chat sites lose
+    # their pop-up alerts; their apps still have them.
+    Set-ChromePolicy -Name 'DefaultNotificationsSetting' -Value 2 -Description 'No site may show notifications'
+
+    # Extra (not CIS): Pop-ups - Blocked
+    # Chrome's default, made mandatory so it can't be switched off or allowed
+    # for a scam site. Values: 1 = allow, 2 = block. Links that open a new
+    # window still work when clicked; only windows a page opens by itself are
+    # blocked, with an icon in the address bar.
+    Set-ChromePolicy -Name 'DefaultPopupsSetting' -Value 2 -Description 'Block pop-ups'
 
     # 3.2.1 Enable Google Cast - Disabled
     # Disables Cast entirely (reduces attack surface and data exposure).
@@ -1202,7 +1359,69 @@ function Set-ChromeHardening {
     # To follow CIS, set the value below to 1.
     Set-ChromePolicy -Name 'IncognitoModeAvailability' -Value 0 -Description 'Leave Incognito mode available'
 
+    # Extra (not CIS): search engine locked to Google, Chrome opens on a New Tab
+    # Scareware installers change the search engine to a fake one full of scam
+    # ads, or the start page to a fake "support" page. RestoreOnStartup 5 opens
+    # a New Tab page, so the last session's tabs aren't reopened.
+    # Chrome only obeys these on a PC in a domain, joined to Entra ID or
+    # enrolled in Chrome Enterprise Core (free): on any other Windows PC it
+    # ignores them, so malware can't hijack Chrome through them either.
+    # chrome://policy then shows them with an error. They're set anyway, so
+    # they take effect if the PC is enrolled.
+    Set-ChromePolicy -Name 'DefaultSearchProviderEnabled' -Value 1 -Description 'Search from the address bar'
+    Set-ChromePolicy -Name 'DefaultSearchProviderName' -Value 'Google' -Type String -Description 'Search engine name'
+    Set-ChromePolicy -Name 'DefaultSearchProviderSearchURL' -Value 'https://www.google.com/search?q={searchTerms}' -Type String -Description 'Search with Google'
+    Set-ChromePolicy -Name 'DefaultSearchProviderSuggestURL' -Value 'https://www.google.com/complete/search?client=chrome&q={searchTerms}' -Type String -Description "Google's search suggestions"
+    Set-ChromePolicy -Name 'RestoreOnStartup' -Value 5 -Description 'Open a New Tab page on startup'
+    $managed = $false
+    try { $managed = [bool](Get-CimInstance Win32_ComputerSystem).PartOfDomain } catch { $managed = $false }
+    if (-not $managed) {
+        try { $managed = [bool](dsregcmd.exe /status 2>$null | Select-String -Pattern 'AzureAdJoined\s*:\s*YES') } catch { $managed = $false }
+    }
+    if (-not $managed) {
+        $enrolled = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Google\Chrome\Enrollment' -ErrorAction SilentlyContinue
+        $managed = [bool]($enrolled -and $enrolled.PSObject.Properties['dmtoken'])
+    }
+    if (-not $managed) {
+        Write-Host "  [Chrome] This PC isn't in a domain, Entra ID or Chrome Enterprise Core, so Chrome ignores the search engine and startup policies" -ForegroundColor Yellow
+    }
+
     Write-Host "Chrome policies applied. Verify at chrome://policy/ after restarting Chrome." -ForegroundColor Cyan
+}
+
+# ---------------------------------------------------------------
+# SECTION 1b: Microsoft Edge, the scam protections from Section 1 (not CIS)
+# Windows still opens some links in Edge (Widgets, Search, some Settings
+# pages) whatever the default browser is, so the policies that matter most
+# against "your computer is infected, call this number" pages are set there
+# too. Edge's SmartScreen policies are in Section 10b. Restart Edge to apply;
+# edge://policy lists them.
+# ---------------------------------------------------------------
+function Set-EdgeHardening {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Applying Microsoft Edge Scam Protections' '.'
+    $edge = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+    $set = {
+        param($name, $value, $description)
+        Set-TrackedValue -Path $edge -Name $name -Value $value
+        Write-Host "  [Edge] $name = $value  # $description" -ForegroundColor Green
+    }
+
+    # Scareware blocker: recognises a full-screen fake "Microsoft support" or
+    # "virus found" page, leaves full screen, stops its sounds and shows a
+    # warning instead. Edge only turns it on by itself on PCs with enough CPU
+    # and memory; the policy keeps it on everywhere.
+    & $set 'ScarewareBlockerProtectionEnabled' 1 'Scareware blocker on'
+    # The same as Chrome (Section 1): no site may show notifications or
+    # pop-ups, and downloads of potentially dangerous file types are blocked
+    & $set 'DefaultNotificationsSetting' 2 'No site may show notifications'
+    & $set 'DefaultPopupsSetting' 2 'Block pop-ups'
+    & $set 'DownloadRestrictions' 2 'Block potentially dangerous downloads'
+    # The same sites as Chrome's URLBlocklist: Chrome Remote Desktop and the
+    # remote access programs' sites
+    Set-ChromePolicyList -Browser Edge -Name 'URLBlocklist' -Values (@('remotedesktop.google.com') + @(Get-BlockedRemoteAccessSite)) -Description 'Block Chrome Remote Desktop and remote access program sites'
 }
 
 # ---------------------------------------------------------------
@@ -1506,6 +1725,181 @@ function Repair-HostsFile {
         }
     } else {
         Write-Host "  [Hosts] Permissions: only administrators and SYSTEM can change it" -ForegroundColor Green
+    }
+}
+
+# ---------------------------------------------------------------
+# SECTION 5c: Proxy settings removed (not CIS)
+# A proxy sees, and can change, everything a program sends through it.
+# Malware and adware set one to watch or rewrite browsing, often as a setup
+# script (PAC) URL, which picks a proxy for each site. A home PC doesn't need
+# one, so every run removes them and reports each as a failure, with the
+# address, so it shows in the summary:
+#   - Windows' proxy (Settings > Network & internet > Proxy: "Use a proxy
+#     server" and "Use setup script") for each user, the Default profile and
+#     the PC (which a policy can make apply to everyone). Windows also keeps
+#     them in the binary values under Internet Settings\Connections: one per
+#     connection, plus the last settings in use.
+#   - WinHTTP's proxy (netsh winhttp show proxy), which Windows services such
+#     as Windows Update and Defender's updates use.
+#   - Policies that set a proxy, or that stop the proxy settings being changed
+#     so the user can't turn it off, and Chrome and Edge proxy policies.
+#   - HTTP_PROXY, HTTPS_PROXY, FTP_PROXY and ALL_PROXY environment variables,
+#     which git, curl, Python, winget and Cygwin use, for each user and the PC.
+# "Automatically detect settings" (WPAD) and the bypass list are left as they
+# are. The old values go in the undo file. A proxy you do want, such as a work
+# one, would be removed every run.
+# Programs already open (browsers) keep using the old proxy until they're
+# restarted, and environment variables change at the next sign-in, so it asks
+# for a restart.
+# ---------------------------------------------------------------
+function Remove-ProxySetting {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    $count = @{ n = 0 }
+    function Report([string]$m) { Write-Fail "[Proxy] $m"; $count.n += 1 }
+
+    # Windows' proxy settings, as one binary value per connection: version,
+    # a counter of changes, flags, then the proxy server, the bypass list and
+    # the setup script URL (each a length and its text), then what
+    # "Automatically detect settings" found. Flags: 1 direct, 2 proxy server,
+    # 4 setup script, 8 automatically detect. WinHttpSettings starts the same,
+    # with no setup script. $null if it isn't laid out like that.
+    function Read-ConnectionBlob([byte[]]$b) {
+        if ($b.Length -lt 12) { return $null }
+        $strings = [System.Collections.Generic.List[string]]::new()
+        $i = 12
+        while ($strings.Count -lt 3 -and $i + 4 -le $b.Length) {
+            $len = [BitConverter]::ToInt32($b, $i)
+            if ($len -lt 0 -or $i + 4 + $len -gt $b.Length) { break }
+            $strings.Add([Text.Encoding]::ASCII.GetString($b, $i + 4, $len).TrimEnd([char]0))
+            $i += 4 + $len
+        }
+        [pscustomobject]@{ Flags = [BitConverter]::ToInt32($b, 8); Strings = $strings.ToArray(); End = $i }
+    }
+
+    # The same value with the proxy server and setup script off and their text
+    # removed, "direct" on, and the counter moved on so Windows sees a change
+    function Clear-ConnectionBlob([byte[]]$b, $info) {
+        $out = [System.Collections.Generic.List[byte]]::new()
+        $out.AddRange([byte[]]$b[0..3])
+        $out.AddRange([BitConverter]::GetBytes([int](([long][BitConverter]::ToInt32($b, 4) + 1) -band 0x7FFFFFFF)))
+        $out.AddRange([BitConverter]::GetBytes([int](($info.Flags -band (-bnot 6)) -bor 1)))
+        foreach ($s in $info.Strings) { $out.AddRange([BitConverter]::GetBytes([int]0)) }
+        if ($info.End -lt $b.Length) { $out.AddRange([byte[]]$b[$info.End..($b.Length - 1)]) }
+        , $out.ToArray()
+    }
+
+    # An Internet Settings key: ProxyEnable/ProxyServer, AutoConfigURL, and
+    # the Connections values. One report per key, however many places hold it.
+    function Repair-InternetSetting([string]$key, [string]$label) {
+        if (-not (Test-Path -LiteralPath $key)) { return }
+        $v = Get-ItemProperty -LiteralPath $key
+        $what = [System.Collections.Generic.List[string]]::new()
+        $winhttp = $null
+        if ($v.PSObject.Properties['ProxyEnable'] -and "$($v.ProxyEnable)" -notin '', '0') {
+            $server = if ($v.PSObject.Properties['ProxyServer']) { "$($v.ProxyServer)" } else { '(none given)' }
+            $what.Add("proxy server $server")
+            Set-TrackedValue -Path $key -Name 'ProxyEnable' -Value 0
+            Remove-TrackedValue -Path $key -Name 'ProxyServer'
+        }
+        if ($v.PSObject.Properties['AutoConfigURL'] -and "$($v.AutoConfigURL)") {
+            $what.Add("setup script $($v.AutoConfigURL)")
+            Remove-TrackedValue -Path $key -Name 'AutoConfigURL'
+        }
+        $conn = "$key\Connections"
+        if (Test-Path -LiteralPath $conn) {
+            $ck = Get-Item -LiteralPath $conn
+            foreach ($n in $ck.GetValueNames()) {
+                if ("$($ck.GetValueKind($n))" -ne 'Binary') { continue }
+                $b = [byte[]]$ck.GetValue($n)
+                $info = Read-ConnectionBlob $b
+                if (-not $info -or ($info.Flags -band 6) -eq 0) { continue }
+                $d = @()
+                if ($info.Flags -band 2) {
+                    $d += if ($info.Strings.Count -ge 1 -and $info.Strings[0]) { "proxy server $($info.Strings[0])" } else { 'a proxy server' }
+                }
+                if ($info.Flags -band 4) {
+                    $d += if ($info.Strings.Count -ge 3 -and $info.Strings[2]) { "setup script $($info.Strings[2])" } else { 'a setup script' }
+                }
+                if ($n -eq 'WinHttpSettings') {
+                    $winhttp = $d -join ', '
+                } else {
+                    # The same proxy is usually in ProxyServer and two of these
+                    foreach ($x in $d) { if (-not $what.Contains($x)) { $what.Add($x) } }
+                }
+                Set-TrackedValue -Path $conn -Name $n -Value (Clear-ConnectionBlob $b $info) -Type Binary
+            }
+        }
+        if ($what.Count) { Report "${label}: Windows proxy settings used $($what -join ', '); removed" }
+        if ($winhttp) { Report "WinHTTP (Windows services) used $winhttp; removed" }
+    }
+
+    # Policies that grey out the proxy settings so they can't be turned off
+    function Repair-ProxyLock([string]$key, [string]$label) {
+        if (-not (Test-Path -LiteralPath $key)) { return }
+        $v = Get-ItemProperty -LiteralPath $key
+        foreach ($n in 'Proxy', 'Autoconfig') {
+            if ($v.PSObject.Properties[$n] -and "$($v.$n)" -ne '0') {
+                Report "${label}: a policy stopped the proxy settings being changed ($n); removed"
+                Remove-TrackedValue -Path $key -Name $n
+            }
+        }
+    }
+
+    # Chrome and Edge proxy policies. Only "direct" or "use Windows' settings"
+    # on its own is left: it isn't a proxy.
+    function Repair-BrowserProxyPolicy([string]$key, [string]$label) {
+        if (-not (Test-Path -LiteralPath $key)) { return }
+        $v = Get-ItemProperty -LiteralPath $key
+        $set = @('ProxyMode', 'ProxyServerMode', 'ProxyServer', 'ProxyPacUrl', 'ProxyBypassList', 'ProxySettings' |
+            Where-Object { $v.PSObject.Properties[$_] })
+        if ($set.Count -eq 0) { return }
+        if ($set.Count -eq 1 -and (($set[0] -eq 'ProxyMode' -and "$($v.ProxyMode)" -in 'direct', 'system') -or
+                ($set[0] -eq 'ProxyServerMode' -and "$($v.ProxyServerMode)" -in '0', '3'))) { return }
+        Report "${label}: $(($set | ForEach-Object { "$_=$($v.$_)" }) -join ', '); removed"
+        foreach ($n in $set) { Remove-TrackedValue -Path $key -Name $n }
+    }
+
+    # Environment variables (value names aren't case-sensitive, nor is -in)
+    function Repair-ProxyVariable([string]$key, [string]$label) {
+        if (-not (Test-Path -LiteralPath $key)) { return }
+        $k = Get-Item -LiteralPath $key
+        foreach ($n in $k.GetValueNames()) {
+            if ($n -notin 'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY') { continue }
+            Report "${label}: environment variable $n=$($k.GetValue($n, $null, 'DoNotExpandEnvironmentNames')); removed"
+            Remove-TrackedValue -Path $key -Name $n
+        }
+    }
+
+    $is = 'Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $policyIs = 'Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $lock = 'Software\Policies\Microsoft\Internet Explorer\Control Panel'
+
+    # The PC (and WinHTTP, whose value is in the PC's Connections key)
+    Repair-InternetSetting "HKLM:\$is" 'The PC'
+    Repair-InternetSetting "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Internet Settings" 'The PC (32-bit programs)'
+    Repair-InternetSetting "HKLM:\$policyIs" 'A PC policy'
+    Repair-ProxyLock "HKLM:\$lock" 'The PC'
+    Repair-BrowserProxyPolicy 'HKLM:\SOFTWARE\Policies\Google\Chrome' 'A Chrome policy'
+    Repair-BrowserProxyPolicy 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'An Edge policy'
+    Repair-ProxyVariable 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' 'The PC'
+
+    Invoke-InEachUserHive {
+        param($root, $label)
+        Repair-InternetSetting "$root\$is" $label
+        Repair-InternetSetting "$root\$policyIs" "$label (policy)"
+        Repair-ProxyLock "$root\$lock" $label
+        Repair-BrowserProxyPolicy "$root\Software\Policies\Google\Chrome" "$label (Chrome policy)"
+        Repair-BrowserProxyPolicy "$root\Software\Policies\Microsoft\Edge" "$label (Edge policy)"
+        Repair-ProxyVariable "$root\Environment" $label
+    }
+
+    if ($count.n -eq 0) {
+        Write-Host "  [Proxy] No proxy set: Windows (each user and the PC), WinHTTP, policies, Chrome, Edge and environment variables" -ForegroundColor Green
+    } else {
+        Add-RestartReason 'A proxy was removed; programs already running may still use it'
     }
 }
 
@@ -2202,6 +2596,109 @@ function Set-ShortcutProtection {
     if (Test-Path $htaCommand) {
         Set-TrackedValue -Path $htaCommand -Name '(default)' -Value '"%SystemRoot%\System32\notepad.exe" "%1"' -Type ExpandString
         Write-Host "  [Explorer] .hta files open in Notepad instead of running" -ForegroundColor Green
+    }
+
+    # Risky file types open in Notepad, or don't open, on double-click
+    # Attachments and downloads use these to run something with one
+    # double-click. Only the "open" action changes: right-click > Run as
+    # administrator still runs a .bat or .cmd, and programs that run them
+    # directly (cmd /c, cscript, reg import, Mount-DiskImage) still work.
+    #   .bat .cmd    batch files. To run one: right-click > Run as
+    #                administrator, or type its name in a Command Prompt.
+    #   .reg         registry files, which change settings when merged. To
+    #                merge one: reg import "<file>" as administrator.
+    #   .scr         screen savers, which are programs. Screen saver settings
+    #                still work; double-clicking shows the file as text.
+    #   .js .vbs .wsf .jse .vbe .wsh  Windows Script Host scripts (also
+    #                turned off in Section 6). .jse and .vbe are encoded, so
+    #                Notepad shows them scrambled; .wsh is a script's settings.
+    #   .application .appref-ms  ClickOnce apps, which install and run from a
+    #                web link. An installed ClickOnce app's Start menu entry
+    #                is an .appref-ms, so it stops starting from there.
+    #   .iso .img .vhd .vhdx  disk images: no longer mounted by double-click
+    #                (Mount is removed from the menu). Malware comes in them
+    #                because files inside lose the "downloaded from the
+    #                internet" mark. To mount one: Mount-DiskImage <path>.
+    # A different program set for one of these by a user (Settings > Apps >
+    # Default apps) still applies to them, so that is reported.
+    $toNotepad = [ordered]@{
+        '.bat'         = 'batfile'
+        '.cmd'         = 'cmdfile'
+        '.reg'         = 'regfile'
+        '.scr'         = 'scrfile'
+        '.js'          = 'JSFile'
+        '.vbs'         = 'VBSFile'
+        '.wsf'         = 'WSFFile'
+        '.jse'         = 'JSEFile'
+        '.vbe'         = 'VBEFile'
+        '.wsh'         = 'WSHFile'
+        '.application' = 'Application.Manifest'
+        '.appref-ms'   = 'Application.Reference'
+    }
+    $noMount = [ordered]@{
+        '.iso'  = 'Windows.IsoFile'
+        '.img'  = 'Windows.IsoFile'
+        '.vhd'  = 'Windows.VhdFile'
+        '.vhdx' = 'Windows.VhdFile'
+    }
+    $notepadCommand = '"%SystemRoot%\System32\notepad.exe" "%1"'
+    $changed = [System.Collections.Generic.List[string]]::new()
+    foreach ($ext in $toNotepad.Keys) {
+        $progId = $toNotepad[$ext]
+        if (-not (Test-Path "HKLM:\SOFTWARE\Classes\$progId")) {
+            Write-Host "  [Explorer] $ext isn't set up on this PC ($progId); nothing to change" -ForegroundColor DarkGray
+            continue
+        }
+        $cmdKey = "HKLM:\SOFTWARE\Classes\$progId\shell\open\command"
+        try {
+            Set-TrackedValue -Path $cmdKey -Name '(default)' -Value $notepadCommand -Type ExpandString
+            # A COM handler here would be used instead of the command line
+            Remove-TrackedValue -Path $cmdKey -Name 'DelegateExecute'
+            $changed.Add($ext)
+        } catch {
+            Write-Fail "[Explorer] Couldn't make $ext open in Notepad: $($_.Exception.Message)"
+        }
+    }
+    if ($changed.Count) {
+        Write-Host "  [Explorer] $($changed -join ' ') open in Notepad instead of running" -ForegroundColor Green
+    }
+    $changed.Clear()
+    foreach ($progId in @($noMount.Values | Select-Object -Unique)) {
+        $key = "HKLM:\SOFTWARE\Classes\$progId\shell\mount"
+        if (-not (Test-Path $key)) { continue }
+        try {
+            # Hides the action from double-click and the menu; programs can still use it
+            Set-TrackedValue -Path $key -Name 'ProgrammaticAccessOnly' -Value '' -Type String
+            $changed.AddRange([string[]]@($noMount.Keys | Where-Object { $noMount[$_] -eq $progId }))
+        } catch {
+            Write-Fail "[Explorer] Couldn't stop $progId files mounting on double-click: $($_.Exception.Message)"
+        }
+    }
+    if ($changed.Count) {
+        Write-Host "  [Explorer] $($changed -join ' ') no longer mount on double-click (Mount-DiskImage still works)" -ForegroundColor Green
+    }
+    # The PC's choice of program for the extension, and each user's
+    $expected = @{}
+    foreach ($ext in $toNotepad.Keys) { $expected[$ext] = $toNotepad[$ext] }
+    foreach ($ext in $noMount.Keys) { $expected[$ext] = $noMount[$ext] }
+    foreach ($ext in $expected.Keys) {
+        $s = Get-RegistryValueState -Path "HKLM:\SOFTWARE\Classes\$ext" -Name '(default)'
+        if ($s -and "$($s.Data)" -and "$($s.Data)" -ne $expected[$ext]) {
+            Write-Host "  [Explorer] $ext files open with $($s.Data) on this PC, not $($expected[$ext]); that program decides what double-click does" -ForegroundColor Yellow
+        }
+    }
+    Invoke-InEachUserHive {
+        param($root, $label)
+        foreach ($ext in $expected.Keys) {
+            $choice = Get-RegistryValueState -Path "$root\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$ext\UserChoice" -Name 'ProgId'
+            $class = Get-RegistryValueState -Path "$root\Software\Classes\$ext" -Name '(default)'
+            foreach ($s in $choice, $class) {
+                if ($s -and "$($s.Data)" -and "$($s.Data)" -ne $expected[$ext] -and "$($s.Data)" -notmatch 'notepad') {
+                    Write-Host "  [Explorer] ${label}: $ext files open with $($s.Data), which double-click still uses. Change it in Settings > Apps > Default apps" -ForegroundColor Yellow
+                    break
+                }
+            }
+        }
     }
 }
 
@@ -2963,10 +3460,8 @@ function Set-ReputationProtection {
 # Microsoft > Windows > Windows Defender > Operational). Includes blocks by
 # the ASR rules from Section 6, so a legitimate program they stopped shows up
 # here with its path, ready for an exclusion.
-# Written to a text file on the Desktop (replaced each run), which opens in
-# Notepad at the end of the script. GetFolderPath finds the Desktop even when
-# OneDrive has moved it. Run elevated from your own account, that's your
-# Desktop; run as a different admin account, it's that account's Desktop.
+# Written to a text file in the log folder (one per run), which the
+# report (Save-RunStatus) includes.
 # ---------------------------------------------------------------
 function Save-ProtectionHistory {
     Set-StrictMode -Version Latest
@@ -2974,10 +3469,12 @@ function Save-ProtectionHistory {
 
     $historyDays = 7
     $historyMax = 1000
-    # Kept in the log folder; the Desktop report (Save-RunStatus) includes it.
+    # Kept in the log folder; the report (Save-RunStatus) includes it.
     # Earlier versions wrote it to the Desktop.
-    $script:HistoryFile = Join-Path $LogDir 'Defender Protection History.txt'
-    Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Defender Protection History.txt') -ErrorAction SilentlyContinue
+    $script:HistoryFile = Join-Path $LogDir "Defender Protection History-$runStamp.txt"
+    # Only tried when it's there, since Controlled folder access blocks it
+    $oldHistory = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Defender Protection History.txt'
+    if (Test-Path -LiteralPath $oldHistory) { Remove-Item -LiteralPath $oldHistory -ErrorAction SilentlyContinue }
     $historyLog = 'Microsoft-Windows-Windows Defender/Operational'
     $historyEvents = @{
         1116 = 'Threat found'
@@ -3488,7 +3985,7 @@ function Start-SafetyScan {
 # Scanner it's an independent second opinion. Runs only if C:\EEK exists (the kit
 # is portable: extract it there). Updates its signatures, then scans detect only
 # (no /quarantine or /delete): /full on Fridays and on the weekly run
-# (-FullScan; can take hours), /quick otherwise. Output goes to eek-scan.log in $LogDir, which opens in Notepad at the
+# (-FullScan; can take hours), /quick otherwise. Output goes to eek-scan-<date>.log in $LogDir, which opens in Notepad at the
 # end of the run if anything is found.
 # This runs as administrator, but a folder made at the root of C: can be changed
 # by the user who made it, so a2cmd.exe must be validly signed by Emsisoft, checked
@@ -3530,7 +4027,7 @@ function Start-EmsisoftScan {
     $full = $FullScan -or (Get-Date).DayOfWeek -eq 'Friday'
     $why = if ($FullScan) { 'weekly run' } else { 'Friday' }
     $scan = if ($full) { '/full' } else { '/quick' }
-    $log = Join-Path $LogDir 'eek-scan.log'
+    $log = Join-Path $LogDir "eek-scan-$runStamp.log"
     Write-Banner "a2cmd $scan$(if ($full) { " ($why; this can take hours)" })" '.'
     # Shown as it runs, and kept for the result check and the log
     $out = @(& $a2cmd $scan 2>&1 | ForEach-Object {
@@ -3559,19 +4056,19 @@ function Start-EmsisoftScan {
 # mywinvscan: starts a full Defender scan limited to 80% CPU and returns. The scan
 # runs in a hidden PowerShell of its own, so it keeps going after this script ends;
 # it can take hours. Its output and MpCmdRun's exit code (0 clean or remediated,
-# 2 needs attention) go to defender-scan.log in $LogDir. MsMpEng.exe does the
+# 2 needs attention) go to defender-scan-<date>.log in $LogDir. MsMpEng.exe does the
 # scanning and its priority can't be lowered, so the CPU limit is set in Defender's
 # preferences. MpCmdRun.exe isn't on PATH, and the current one is in a versioned
 # Platform dir.
 function Start-DefenderScan {
     $cpu = 80
-    $log = Join-Path $LogDir 'defender-scan.log'
-    # A second run while the first scan is still going would delete its log and
-    # start another full scan on top of it.
+    $log = Join-Path $LogDir "defender-scan-$runStamp.log"
+    # A second run while the first scan is still going would start another
+    # full scan on top of it.
     try {
         $mp = Get-MpComputerStatus -ErrorAction Stop
         if ($mp.FullScanInProgress -or $mp.QuickScanInProgress) {
-            Write-Host "A Defender scan is already running; this run left it alone and did not replace $log" -ForegroundColor Yellow
+            Write-Host 'A Defender scan is already running; this run left it alone' -ForegroundColor Yellow
             $script:Notes.Add('A Defender scan was already running, so this run did not start another')
             return
         }
@@ -3610,7 +4107,6 @@ function Start-DefenderScan {
     $command = "& $(& $q $mpcmd) $($opts -join ' ') 2>&1 | Out-File -Encoding ascii -FilePath $(& $q $log)`n" +
         "Add-Content -Encoding ascii -Path $(& $q $log) -Value `"MpCmdRun exit code: `$LASTEXITCODE (0 = clean or remediated)`""
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
     Write-Host "Starting $mpcmd $($opts -join ' ')"
     try {
         Start-Process -WindowStyle Hidden -ErrorAction Stop `
@@ -4259,6 +4755,293 @@ function Remove-QuickAssist {
     }
 }
 
+# Remote access programs other than Windows' own (not CIS). Tech-support
+# scams get the person to install one, then use it to take over the PC: to
+# "remove a virus", to log in to the bank while the screen is blanked, or to
+# come back later. Windows' own are the quickassist and remoteaccess steps.
+# Every run looks for them in installed programs (for everyone and for each
+# user), Store apps, Chocolatey packages, services and running programs, and
+# uninstalls them silently. Each one found is a failure, so the popup asks
+# for the report to be sent. Also reported: a copy in a user's Downloads or
+# on their Desktop (often run without installing, as AnyDesk can be). The
+# script can't delete those, as Controlled folder access protects them.
+# A service left with no uninstaller is stopped and disabled. An uninstaller
+# that waits for a click is stopped after 5 minutes and reported.
+# To keep one, add its name to $ApprovedRemoteAccessApps at the top.
+function Remove-RemoteAccessApp {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+
+    Write-Banner 'Removing Remote Access Programs' '.'
+
+    # Name = what to look for in program, service, file and package names
+    $all = [ordered]@{
+        'AnyDesk'       = 'AnyDesk'
+        'TeamViewer'    = 'TeamViewer'
+        'RustDesk'      = 'RustDesk'
+        'UltraViewer'   = 'UltraView(er)?'
+        'Splashtop'     = 'Splashtop'
+        'Supremo'       = '^Supremo'
+        'AeroAdmin'     = 'AeroAdmin'
+        'RemotePC'      = 'RemotePC'
+        'LogMeIn'       = 'LogMeIn'
+        'ScreenConnect' = 'ScreenConnect|ConnectWise Control'
+        'Zoho Assist'   = 'Zoho[ -]?Assist|ZohoURS'
+        'DWService'     = 'DWAgent|DWService'
+        'MeshAgent'     = 'Mesh ?Agent|MeshCentral'
+        'TightVNC'      = 'TightVNC'
+        'RealVNC'       = 'RealVNC|^VNC[ -]?(Server|Viewer|Connect)'
+        'NetSupport'    = 'NetSupport'
+    }
+    foreach ($a in $ApprovedRemoteAccessApps) {
+        if (-not $all.Contains($a)) {
+            Write-Host "  [Remote access] '$a' in `$ApprovedRemoteAccessApps isn't one of: $($all.Keys -join ', ')" -ForegroundColor Yellow
+        }
+    }
+    $apps = [ordered]@{}
+    foreach ($k in $all.Keys) {
+        if ($ApprovedRemoteAccessApps -contains $k) {
+            Write-Host "  [Remote access] $k is approved; left alone" -ForegroundColor DarkGray
+        } else {
+            $apps[$k] = $all[$k]
+        }
+    }
+    if ($apps.Count -eq 0) { return }
+
+    $count = @{ found = 0 }
+    function Report([string]$m) { Write-Fail "[Remote access] $m"; $count.found += 1 }
+    function Get-Prop($o, [string]$n) { if ($o.PSObject.Properties[$n]) { "$($o.$n)" } else { '' } }
+
+    # Which program a set of names belongs to, or $null
+    function Get-RemoteAppName([string[]]$texts) {
+        foreach ($name in $apps.Keys) {
+            foreach ($t in $texts) { if ($t -and $t -match $apps[$name]) { return $name } }
+        }
+        $null
+    }
+
+    # Running copies, found by process name and the file's product name and
+    # description
+    function Get-RemoteAppProcess {
+        foreach ($p in Get-Process) {
+            $path = $null
+            try { $path = $p.Path } catch { $path = $null }
+            $texts = @($p.ProcessName)
+            if ($path) {
+                try {
+                    $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($path)
+                    $texts += @($info.ProductName, $info.FileDescription)
+                } catch { $texts += @() }
+            }
+            $app = Get-RemoteAppName $texts
+            if ($app) { [pscustomobject]@{ App = $app; Process = $p; Path = $path } }
+        }
+    }
+    function Stop-RemoteAppProcess([string]$app) {
+        foreach ($r in @(Get-RemoteAppProcess | Where-Object { $_.App -eq $app })) {
+            Stop-Process -Id $r.Process.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # "C:\x\a.exe" /b, or C:\x\a.exe /b unquoted, as the program and the rest
+    function Split-CommandLine([string]$c) {
+        $c = $c.Trim()
+        if ($c -match '^"([^"]+)"\s*(.*)$') { return $Matches[1], $Matches[2] }
+        if ($c -match '^(.+?\.exe)\s*(.*)$') { return $Matches[1], $Matches[2] }
+        return $c, ''
+    }
+
+    # Silent switches for an UninstallString (QuietUninstallString has them)
+    function Add-SilentArgument([string]$app, [string]$exe, [string]$arg, [string]$id) {
+        $leaf = Split-Path $exe -Leaf
+        # Inno Setup
+        if ($id -match '_is1$' -or $leaf -match '^unins\d+\.exe$') { return "$arg /VERYSILENT /SUPPRESSMSGBOXES /NORESTART".Trim() }
+        switch ($app) {
+            'AnyDesk' {
+                if ($arg -notmatch '--uninstall') { $arg += ' --uninstall' }
+                if ($arg -notmatch '--silent') { $arg += ' --silent' }
+                return $arg.Trim()
+            }
+            'RustDesk' { if ($arg -notmatch '--uninstall') { $arg += ' --uninstall' }; return $arg.Trim() }
+            'MeshAgent' { if ($arg -notmatch 'uninstall') { $arg += ' -fulluninstall' }; return $arg.Trim() }
+        }
+        # NSIS (TeamViewer and others): uninstall.exe, uninst.exe
+        if ($leaf -match 'uninst' -and $arg -notmatch '(^|\s)/S(\s|$)') { return "$arg /S".Trim() }
+        $arg
+    }
+
+    # Programs and Features entries under one Uninstall key
+    function Get-RemoteAppEntry([string]$root) {
+        foreach ($k in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            $v = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+            if (-not $v) { continue }
+            $app = Get-RemoteAppName @(Get-Prop $v 'DisplayName')
+            if ($app) { [pscustomobject]@{ App = $app; Key = $k.PSPath; Id = $k.PSChildName; Values = $v } }
+        }
+    }
+
+    function Invoke-RemoteAppUninstall($e, [string]$where) {
+        $v = $e.Values
+        $what = "$(Get-Prop $v 'DisplayName') $(Get-Prop $v 'DisplayVersion')".Trim()
+        $u = Get-Prop $v 'UninstallString'
+        $q = Get-Prop $v 'QuietUninstallString'
+        $guid = $null
+        if ($e.Id -match '^\{[0-9A-Fa-f-]{36}\}$') { $guid = $e.Id }
+        elseif ($u -match '\{[0-9A-Fa-f-]{36}\}') { $guid = $Matches[0] }
+        if ($guid -and ($u -match 'msiexec' -or (Get-Prop $v 'WindowsInstaller') -eq '1')) {
+            $exe = Join-Path $env:SystemRoot 'System32\msiexec.exe'
+            $arg = "/x $guid /qn /norestart"
+        } elseif ($q) {
+            $exe, $arg = Split-CommandLine $q
+        } elseif ($u) {
+            $exe, $arg = Split-CommandLine $u
+            $arg = Add-SilentArgument $e.App $exe $arg $e.Id
+        } else {
+            Report "$what is installed $where, with no uninstaller; remove it in Settings > Apps"
+            return
+        }
+        $exe = [Environment]::ExpandEnvironmentVariables($exe)
+        if (-not (Test-Path -LiteralPath $exe)) {
+            $loc = Get-Prop $v 'InstallLocation'
+            if (-not $loc -or -not (Test-Path -LiteralPath $loc)) {
+                # The program is gone; only its Programs and Features entry is left
+                Remove-Item -LiteralPath $e.Key -Recurse -Force
+                Write-Host "  [Remote access] $what ($where): only a left-over entry in Programs and Features; removed it" -ForegroundColor Yellow
+                return
+            }
+            Report "$what is installed $where, but its uninstaller $exe is missing; remove it in Settings > Apps"
+            return
+        }
+        # Some uninstallers won't run while the program is
+        Stop-RemoteAppProcess $e.App
+        Write-Host "  [Remote access] Uninstalling $what ($where): $exe $arg" -ForegroundColor Cyan
+        $splat = @{ FilePath = $exe; PassThru = $true }
+        if ($arg) { $splat.ArgumentList = $arg }
+        try {
+            $p = Start-Process @splat
+            $null = $p.Handle   # keeps the exit code readable after it exits
+        } catch {
+            Report "$what is installed $where; couldn't start its uninstaller: $($_.Exception.Message)"
+            return
+        }
+        if (-not $p.WaitForExit(300000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Report "$what is installed $where; its uninstaller was still running after 5 minutes (probably waiting for a click), so it was stopped. Remove it in Settings > Apps"
+            return
+        }
+        # Some uninstallers hand over to a copy of themselves and return at once
+        for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $e.Key); $i++) { Start-Sleep -Seconds 2 }
+        if (Test-Path -LiteralPath $e.Key) {
+            Report "$what is installed $where; its uninstaller (exit $($p.ExitCode)) didn't remove it. Remove it in Settings > Apps"
+        } else {
+            Report "$what was installed $where; uninstalled"
+        }
+        if ($p.ExitCode -in 3010, 1641) { Add-RestartReason "Uninstalling $what finishes at the next restart" }
+    }
+
+    # Chocolatey first, or "choco upgrade all" (patchchoco) would put it back
+    $chocoRoot = if ($env:ChocolateyInstall) { $env:ChocolateyInstall } else { Join-Path $env:ProgramData 'chocolatey' }
+    $lib = Join-Path $chocoRoot 'lib'
+    if ((Test-Path -LiteralPath $lib) -and (Get-Command choco -ErrorAction SilentlyContinue)) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $lib -Directory)) {
+            $app = Get-RemoteAppName @($d.Name)
+            # A dependency already removed with the package before it
+            if (-not $app -or -not (Test-Path -LiteralPath $d.FullName)) { continue }
+            Stop-RemoteAppProcess $app
+            Invoke-Native choco 'uninstall', $d.Name, '-y'
+            if ($LASTEXITCODE -eq 0) {
+                Report "$app was installed with Chocolatey (package $($d.Name)); uninstalled"
+            } else {
+                Report "$app was installed with Chocolatey (package $($d.Name)); choco uninstall exited $LASTEXITCODE"
+            }
+        }
+    }
+
+    # Installed for everyone
+    foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
+        foreach ($e in @(Get-RemoteAppEntry $root)) { Invoke-RemoteAppUninstall $e 'for everyone' }
+    }
+    # Installed for one user (ScreenConnect and Zoho Assist can be). Uninstalled
+    # while their registry is loaded; one for another user may need removing
+    # while signed in as them.
+    Invoke-InEachUserHive {
+        param($root, $label)
+        foreach ($e in @(Get-RemoteAppEntry "$root\Software\Microsoft\Windows\CurrentVersion\Uninstall")) {
+            Invoke-RemoteAppUninstall $e "for $label"
+        }
+    }
+
+    # Store apps
+    $seenPkg = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $packages = @()
+    try { $packages = @(Get-AppxPackage -AllUsers -ErrorAction Stop) } catch { $packages = @() }
+    foreach ($pkg in $packages) {
+        $app = Get-RemoteAppName @($pkg.Name)
+        if (-not $app -or -not $seenPkg.Add($pkg.PackageFullName)) { continue }
+        Stop-RemoteAppProcess $app
+        try {
+            Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction Stop
+            Report "$app was installed from the Microsoft Store ($($pkg.Name)); removed"
+        } catch {
+            Report "$app is installed from the Microsoft Store ($($pkg.Name)); couldn't remove it: $($_.Exception.Message)"
+        }
+    }
+
+    # Services still there: installed without an uninstaller, or one that
+    # failed. Stopped and disabled, so it can't let anyone in.
+    foreach ($s in @(Get-CimInstance Win32_Service)) {
+        $app = Get-RemoteAppName @($s.Name, $s.DisplayName, $s.PathName)
+        if (-not $app) { continue }
+        Stop-Service -Name $s.Name -Force -ErrorAction SilentlyContinue
+        try {
+            Set-Service -Name $s.Name -StartupType Disabled -ErrorAction Stop
+            Report "$app service '$($s.DisplayName)' ($($s.PathName)) is still installed; stopped and disabled it. Delete its folder"
+        } catch {
+            Report "$app service '$($s.DisplayName)' ($($s.PathName)) is still installed and couldn't be disabled: $($_.Exception.Message)"
+        }
+    }
+
+    # Still running: a copy run without installing
+    $reported = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($r in @(Get-RemoteAppProcess)) {
+        Stop-Process -Id $r.Process.Id -Force -ErrorAction SilentlyContinue
+        $where = if ($r.Path) { $r.Path } else { "process $($r.Process.ProcessName)" }
+        if ($reported.Add($where)) { Report "$($r.App) was running from $where; stopped it. Delete the file" }
+    }
+
+    # Copies in each user's Downloads and on their Desktop (OneDrive's too),
+    # a folder down
+    $profiles = @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' |
+        Where-Object { $_.PSChildName -match '^S-1-(5-21|12-1)-' } |
+        ForEach-Object { Get-Prop (Get-ItemProperty -LiteralPath $_.PSPath) 'ProfileImagePath' } |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+    foreach ($profileDir in $profiles) {
+        $dirs = @((Join-Path $profileDir 'Downloads'), (Join-Path $profileDir 'Desktop')) +
+            @(Get-ChildItem -LiteralPath $profileDir -Directory -Filter 'OneDrive*' -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path $_.FullName 'Desktop' })
+        foreach ($d in $dirs) {
+            if (-not (Test-Path -LiteralPath $d)) { continue }
+            foreach ($f in @(Get-ChildItem -LiteralPath $d -File -Recurse -Depth 1 -Include '*.exe', '*.msi' -ErrorAction SilentlyContinue)) {
+                $texts = @($f.Name)
+                if ($f.Extension -eq '.exe') {
+                    try { $texts += @($f.VersionInfo.ProductName, $f.VersionInfo.FileDescription) } catch { $texts += @() }
+                }
+                $app = Get-RemoteAppName $texts
+                if ($app -and $reported.Add($f.FullName)) {
+                    Report "$app installer or copy: $($f.FullName). Delete it (Controlled folder access stops the script deleting it)"
+                }
+            }
+        }
+    }
+
+    if ($count.found -eq 0) {
+        Write-Host "  [Remote access] None found: $($apps.Keys -join ', ')" -ForegroundColor Green
+    } else {
+        $script:Notes.Add('A remote access program was found (see the failures). If nobody using this PC put it there, a scammer may have had control of it: from another device, change the passwords for email and banking, and call the bank')
+    }
+}
+
 # The SMB1Protocol Windows feature, not the Computer Browser service (that one
 # is in cis-services). -NoRestart: this script never restarts the PC. A removal
 # that is waiting on a restart keeps saying so until the PC is restarted.
@@ -4684,7 +5467,7 @@ function Test-UacSetting {
 
 # The recovery passwords currently on the volume, in an admin-only file.
 # Returns the path, or $null when the volume has no recovery password.
-# The password is not written to the transcript or the Desktop report.
+# The password is not written to the transcript or the report.
 function Save-BitLockerRecoveryKey {
     param([Parameter(Mandatory)]$Volume)
     $passwords = @($Volume.KeyProtector | Where-Object {
@@ -4879,9 +5662,12 @@ function Test-DiskHealth {
     }
 }
 
-# "PC check report.txt" on the Desktop, replaced every run and opened in
+# "PC check report-<date>.txt" in the log folder, one per run, opened in
 # Notepad at the end: the one file the person using the PC is asked to send
 # when there are problems. The run's result, then the Protection history.
+# Not on the Desktop: Controlled folder access protects it (Section 10) and
+# blocks PowerShell writing there, and allowing PowerShell would let
+# ransomware written in PowerShell through too.
 function Save-RunStatus {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
@@ -4918,24 +5704,22 @@ function Save-RunStatus {
         foreach ($l in Get-Content -LiteralPath $script:HistoryFile) { $lines.Add($l) }
     }
 
-    $desktop = [Environment]::GetFolderPath('Desktop')
-    $path = Join-Path $desktop 'PC check report.txt'
+    $path = Join-Path $LogDir "PC check report-$runStamp.txt"
     try {
         Set-Content -LiteralPath $path -Value $lines -Encoding UTF8 -ErrorAction Stop
     } catch {
-        # Controlled folder access blocks PowerShell writing to the Desktop
-        $fallback = Join-Path $LogDir 'PC check report.txt'
-        Write-Host "  Couldn't write $path ($($_.Exception.Message)); using $fallback" -ForegroundColor Yellow
-        $path = $fallback
-        try {
-            Set-Content -LiteralPath $path -Value $lines -Encoding UTF8 -ErrorAction Stop
-        } catch {
-            Write-Fail "[Status] Couldn't write ${path}: $($_.Exception.Message)"
-            return
-        }
+        Write-Fail "[Status] Couldn't write ${path}: $($_.Exception.Message)"
+        return
     }
     $script:StatusFile = $path
     Write-Host "  Status: $path" -ForegroundColor Green
+
+    # Earlier versions wrote it to the Desktop. Deleting that copy would be
+    # blocked too, so just say it's out of date (checking is allowed).
+    $old = Join-Path ([Environment]::GetFolderPath('Desktop')) 'PC check report.txt'
+    if (Test-Path -LiteralPath $old) {
+        Write-Host "  [Status] $old is from an earlier run and no longer updated; delete it" -ForegroundColor Yellow
+    }
 }
 
 # ---------------------------------------------------------------
@@ -4950,13 +5734,29 @@ function Save-RunStatus {
 #     with the user's admin rights and no prompt. Wakes the PC from sleep; if
 #     the PC was off or signed out, it runs at the next chance.
 #   - Task Scheduler \win11.restrict.and.scan\Run now: the same, without -FullScan.
-#     A full scan still runs when today is Friday. Started by the Desktop
-#     shortcut "Check and update this PC" (no permission prompt).
+#     A full scan still runs when today is Friday. Started by the Start menu
+#     shortcut "My OS Refresher" (no permission prompt). Not on the Desktop:
+#     Controlled folder access protects it and blocks PowerShell making one.
 # Run it again after changing the script, to update the copy.
 # ---------------------------------------------------------------
 $InstallDir = Join-Path $env:ProgramFiles 'win11.restrict.and.scan'
 $TaskFolder = '\win11.restrict.and.scan\'
-$ShortcutName = 'Check and update this PC.lnk'
+$ShortcutName = 'My OS Refresher.lnk'
+# The Desktop shortcut earlier versions made, removed when it's there
+$OldShortcutName = 'Check and update this PC.lnk'
+
+# The Desktop shortcut earlier versions made. Controlled folder access may
+# block deleting it, so then it says to delete it by hand.
+function Remove-OldShortcut {
+    $old = Join-Path ([Environment]::GetFolderPath('Desktop')) $OldShortcutName
+    if (-not (Test-Path -LiteralPath $old)) { return }
+    Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $old) {
+        Write-Host "  Couldn't remove the old shortcut $old (Controlled folder access); delete it by hand" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Old Desktop shortcut removed: $old" -ForegroundColor Green
+    }
+}
 
 function Install-Win11RestrictAndScan {
     Set-StrictMode -Version Latest
@@ -5000,7 +5800,7 @@ function Install-Win11RestrictAndScan {
         -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Friday -At '20:00') -Principal $principal -Settings $settings `
         -Description 'win11.restrict.and.scan with full scans, every Friday at 20:00' -Force | Out-Null
     Register-ScheduledTask -TaskPath $TaskFolder -TaskName 'Run now' -Action (& $action '') `
-        -Principal $principal -Settings $settings -Description 'win11.restrict.and.scan, started by the Desktop shortcut' -Force | Out-Null
+        -Principal $principal -Settings $settings -Description 'win11.restrict.and.scan, started by the Start menu shortcut My OS Refresher' -Force | Out-Null
     # Let the user start "Run now" without admin rights (read and execute), so
     # the shortcut doesn't need a permission prompt. It still runs with their
     # admin rights, as set up here.
@@ -5016,7 +5816,8 @@ function Install-Win11RestrictAndScan {
     }
     Write-Host "  Weekly run: Fridays at 20:00, as $($me.Name) (Task Scheduler > $($TaskFolder)Weekly)" -ForegroundColor Green
 
-    $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) $ShortcutName
+    # The user's own Start menu (AppData\Roaming\Microsoft\Windows\Start Menu\Programs)
+    $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) $ShortcutName
     $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
     try {
         $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
@@ -5027,14 +5828,14 @@ function Install-Win11RestrictAndScan {
         $icon = Join-Path $env:SystemRoot 'System32\SecurityHealthSystray.exe'
         $s.IconLocation = if (Test-Path -LiteralPath $icon) { "$icon,0" } else { "$env:SystemRoot\System32\shell32.dll,47" }
         $s.Save()
-        Write-Host "  Desktop shortcut: $lnk" -ForegroundColor Green
+        Write-Host "  Start menu shortcut: $lnk" -ForegroundColor Green
     } catch {
-        # Controlled folder access protects the Desktop
-        Write-Fail "[Install] Couldn't make the Desktop shortcut ($($_.Exception.Message)). Make one by hand: target $schtasks /Run /TN `"$($TaskFolder)Run now`""
+        Write-Fail "[Install] Couldn't make the Start menu shortcut ($($_.Exception.Message)). Make one by hand: target $schtasks /Run /TN `"$($TaskFolder)Run now`""
     }
+    Remove-OldShortcut
 
     Write-Host ''
-    Write-Host 'Installed. To check the PC now, double-click the Desktop shortcut.'
+    Write-Host 'Installed. To check the PC now, open Start and choose My OS Refresher.'
     Write-Host "Logs, reports and registry undo files: $LogDir"
 }
 
@@ -5052,9 +5853,10 @@ function Uninstall-Win11RestrictAndScan {
         Write-Verbose 'task folder already gone'
     }
     Write-Host '  Scheduled tasks removed' -ForegroundColor Green
-    Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) $ShortcutName) -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Programs')) $ShortcutName) -ErrorAction SilentlyContinue
+    Remove-OldShortcut
     Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "  Desktop shortcut and $InstallDir removed" -ForegroundColor Green
+    Write-Host "  Start menu shortcut and $InstallDir removed" -ForegroundColor Green
     Write-Host ''
     Write-Host "The settings it applied stay. Logs, reports and registry undo files are kept in $LogDir."
 }
@@ -5105,10 +5907,8 @@ try {
     Write-Verbose "couldn't turn QuickEdit off: $($_.Exception.Message)"
 }
 
+# Every run's files are kept, named with the date and time the run started
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-Get-ChildItem -LiteralPath $LogDir -Filter 'win11.restrict.and.scan-*.log' |
-    Where-Object LastWriteTime -lt (Get-Date).AddDays(-30) |
-    Remove-Item -Force
 $runStamp = Get-Date -Format yyyyMMdd-HHmmss
 $transcript = Join-Path $LogDir "win11.restrict.and.scan-$runStamp.log"
 Start-Transcript -LiteralPath $transcript | Out-Null
@@ -5132,12 +5932,15 @@ try {
 
     # Hardening, before anything is installed
     Invoke-Step 'cis-chrome' { Set-ChromeHardening }
+    Invoke-Step 'edge' { Set-EdgeHardening }
     Invoke-Step 'cis-services' { Disable-UnneededService }
     Invoke-Step 'quickassist' { Remove-QuickAssist }
+    Invoke-Step 'remotetools' { Remove-RemoteAccessApp }
     Invoke-Step 'smb1' { Remove-SmbV1 }
     Invoke-Step 'cis-registry' { Set-SecurityRegistry }
     Invoke-Step 'dns' { Set-SecureDns }
     Invoke-Step 'hostsfile' { Repair-HostsFile }
+    Invoke-Step 'proxy' { Remove-ProxySetting }
     Invoke-Step 'scriptprotect' { Set-ScriptProtection }
     Invoke-Step 'taskhistory' { Enable-TaskHistory }
     Invoke-Step 'cis-office' { Set-OfficeHardening }
@@ -5235,9 +6038,7 @@ if ($script:EekLog) {
 # Then one message in plain words, after Notepad so it's in front. After a
 # weekly run at night it waits there for the morning. The PC restarts only
 # if Yes is clicked, when something is actually waiting on a restart.
-$report = if ($script:StatusFile -and $script:StatusFile -like "$([Environment]::GetFolderPath('Desktop'))*") {
-    '"PC check report.txt" on your Desktop'
-} elseif ($script:StatusFile) {
+$report = if ($script:StatusFile) {
     $script:StatusFile
 } else {
     $transcript

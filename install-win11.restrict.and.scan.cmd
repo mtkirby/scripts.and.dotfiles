@@ -3,16 +3,17 @@ rem Sets up win11.restrict.and.scan.ps1 on this PC for whoever is signed in, so 
 rem used without knowing PowerShell:
 rem   - a copy in C:\Program Files\win11.restrict.and.scan (only administrators can change it)
 rem   - a weekly run, Fridays at 20:00, with full virus scans
-rem   - "Check and update this PC" on the Desktop, to run it any time
+rem   - "My OS Refresher" in the Start menu, to run it any time
 rem
 rem Sign in as the person who uses the PC (their account must be an
 rem administrator), keep this file in the same folder as win11.restrict.and.scan.ps1, and
-rem double-click it. Answer Yes when Windows asks for permission.
+rem right-click it > Run as administrator (double-click opens it in Notepad
+rem once the script has run; see lnkprotect). Answer Yes when Windows asks.
 rem Run it again after changing win11.restrict.and.scan.ps1, to update the installed copy.
 rem To remove it:  install-win11.restrict.and.scan.cmd /uninstall
 rem
 rem If Windows says it "protected your PC" and won't run this, right-click the
-rem file > Properties > tick Unblock > OK, then double-click it again.
+rem file > Properties > tick Unblock > OK, then run it again.
 setlocal
 set "mode=-Install"
 if /i "%~1"=="/uninstall" set "mode=-Uninstall"

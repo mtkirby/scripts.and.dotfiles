@@ -1,4 +1,5 @@
 Make sure bitlocker recovery key is available
+    https://account.microsoft.com/devices/recoverykey
 Check spreadsheets and docs
 Check backups
 Check if smart app control is on
@@ -8,4 +9,5 @@ check scheduled tasks
 check startup tasks
 pc manager
 zoom
-
+printer
+wifi router
