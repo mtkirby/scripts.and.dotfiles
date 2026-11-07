@@ -1,11 +1,11 @@
 @echo off
 rem Runs win11.restrict.and.scan.ps1 once, now.
 rem   run-win11.restrict.and.scan.cmd         quick scans (full on Fridays)
-rem   run-win11.restrict.and.scan.cmd /full   full scans, as the weekly run does
+rem   run-win11.restrict.and.scan.cmd /full   full scans whatever the day
 rem
 rem If the installer has been run, this starts its scheduled task, which runs
 rem the installed copy in Program Files in its own window: "Run now" with no
-rem permission prompt, or "Weekly" for /full (that one needs the prompt).
+rem permission prompt, or "Full scan" for /full (that one needs the prompt).
 rem If neither can be started, this runs win11.restrict.and.scan.ps1 from the
 rem folder this file is in, and Windows asks for permission.
 rem
@@ -20,7 +20,7 @@ set "extra="
 set "task=\win11.restrict.and.scan\Run now"
 if /i "%~1"=="/full" (
     set "extra=-FullScan"
-    set "task=\win11.restrict.and.scan\Weekly"
+    set "task=\win11.restrict.and.scan\Full scan"
 )
 
 rem The installed copy. If the task isn't there, or this account isn't
@@ -30,7 +30,7 @@ if not errorlevel 1 goto started
 
 rem fltmc only works as administrator. If it fails, start this file again
 rem with the permission prompt and let that copy do the work (it tries the
-rem task again first: "Weekly" needs administrator rights to start).
+rem task again first: "Full scan" needs administrator rights to start).
 fltmc >nul 2>&1
 if errorlevel 1 (
     powershell.exe -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%~1 ' -Verb RunAs"

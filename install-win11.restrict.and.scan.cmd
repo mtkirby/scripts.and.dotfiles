@@ -2,7 +2,7 @@
 rem Sets up win11.restrict.and.scan.ps1 on this PC for whoever is signed in, so it can be
 rem used without knowing PowerShell:
 rem   - a copy in C:\Program Files\win11.restrict.and.scan (only administrators can change it)
-rem   - a weekly run, Fridays at 20:00, with full virus scans
+rem   - a daily run at 20:00, with full virus scans on Fridays
 rem   - "My OS Refresher" in the Start menu, to run it any time
 rem
 rem Sign in as the person who uses the PC (their account must be an

@@ -3,8 +3,9 @@
     VERSION 2026-11-07
 
     Keeps a Windows 11 PC used by non-technical person who is a target of scams
-    and malware. Task Scheduler runs it every Friday at 20:00, and the Start
-    menu entry "My OS Refresher" runs it any time. Each run:
+    and malware. Task Scheduler runs it every day at 20:00 (full virus scans
+    on Fridays, quick ones otherwise), and the Start menu entry "My OS
+    Refresher" runs it any time. Each run:
     - Locks down Chrome and Edge: CIS policies, an extension allowlist, no
       site notifications or pop-ups (the "your PC is infected, call this
       number" lure), risky downloads blocked, remote access sites blocked.
@@ -16,14 +17,15 @@
       access programs (AnyDesk, TeamViewer...), proxy settings, hosts file
       entries and Defender exclusions that aren't approved.
     - Updates Windows, Office, Store apps, winget and Chocolatey packages.
-    - Scans with Defender, Microsoft Safety Scanner and Emsisoft, and checks
-      disks, Windows' own files, BitLocker, startup entries, and unsigned
-      programs and drivers.
-    - Reports: a dated report and log in C:\ProgramData\win11.restrict.and.scan,
-      opened in Notepad, then a plain-words message saying whether to send
-      the report to the helper and whether to restart. It never restarts the
-      PC by itself, and the registry values it changes are saved to an
-      undo file (.reg).
+    - Scans with Defender and Emsisoft, and checks disks, BitLocker, startup
+      entries, and unsigned programs and drivers. On Fridays also Microsoft
+      Safety Scanner, and checks Windows' own files (DISM, sfc, chkdsk).
+    - Reports: a dated report and log in C:\ProgramData\win11.restrict.and.scan.
+      When there's a problem or a restart is needed (or it was started from
+      the Start menu), the report opens in Notepad with a plain-words
+      message saying whether to send it to the helper and whether to
+      restart. It never restarts the PC by itself, and the registry values
+      it changes are saved to an undo file (.reg).
 
 .DESCRIPTION
     Every step runs even if an earlier one fails; the summary at the end lists what failed.
@@ -135,8 +137,8 @@
                           update scan
        - patchwinget:     winget upgrade --all
     5. msert:             Microsoft Safety Scanner, downloaded fresh, detect only:
-                          a full scan on Fridays and with -FullScan, a quick
-                          scan otherwise
+                          a full scan, on Fridays and with -FullScan only (each
+                          run downloads a few hundred MB)
        eekscan:           if C:\EEK exists, Emsisoft Emergency Kit, updated,
                           detect only: a full scan on Fridays and with
                           -FullScan, quick otherwise
@@ -154,8 +156,10 @@
                           without a restart, except while a Data Execution
                           Prevention change is still waiting for one
        - diskhealth:      fails if a physical disk is Unhealthy or Warning
-       - winhealthcheck:  DISM ScanHealth, sfc /scannow, DISM AnalyzeComponentStore
-       - windiskcheck:    chkdsk /scan of the system drive
+       - winhealthcheck:  DISM ScanHealth, sfc /scannow, DISM AnalyzeComponentStore,
+                          on Fridays and with -FullScan
+       - windiskcheck:    chkdsk /scan of the system drive, on Fridays and with
+                          -FullScan
        - mywinprocsigs:   running programs without a valid Authenticode
                           signature, and LOLBAS programs renamed or running from
                           unusual folders
@@ -165,8 +169,9 @@
        - winmodcheck:     loaded drivers without a valid signature or in the
                           loldrivers.io list, and settings that let unsigned or
                           blocklisted drivers load
-    7. mywinvscan:        start a full Defender scan, limited to 80% CPU, in the
-                          background. After the checks, so it is not reading the
+    7. mywinvscan:        start a Defender scan, limited to 80% CPU, in the
+                          background: full on Fridays and with -FullScan, quick
+                          otherwise. After the checks, so it is not reading the
                           disk during DISM, sfc, or chkdsk
     8. protectionhistory: the last 7 days of Defender's Protection history,
                           written to the log folder
@@ -181,8 +186,8 @@
 
     For someone who isn't technical: run install-win11.restrict.and.scan.cmd once on their
     PC, signed in as them (their account must be an administrator). It copies
-    the script to C:\Program Files\win11.restrict.and.scan, schedules it for Fridays at 20:00
-    with full scans, and puts "My OS Refresher" in their Start menu, which
+    the script to C:\Program Files\win11.restrict.and.scan, schedules it for every day at
+    20:00 (full scans on Fridays), and puts "My OS Refresher" in their Start menu, which
     runs it with no permission prompt. See Install-Win11RestrictAndScan.
 
     Any run that changes registry values (including service startup types)
@@ -202,11 +207,18 @@
     (yyyyMMdd-HHmmss), e.g. win11.restrict.and.scan-20261107-200000.log.
 
 .PARAMETER FullScan
-    Full Safety Scanner and Emsisoft scans whatever the day. The weekly
-    scheduled run uses it.
+    Full Defender, Safety Scanner and Emsisoft scans whatever the day.
+    Without it, they're full on Fridays and quick on other days.
+    run-win11.restrict.and.scan.cmd /full uses it.
+
+.PARAMETER Scheduled
+    Set by the Daily scheduled task. A run that finds no problems and needs
+    no restart then ends without opening Notepad or showing a message; the
+    report and log are still saved. Started from the Start menu, the message
+    always shows.
 
 .PARAMETER Install
-    Set up the weekly run and the Start menu shortcut for the signed-in user, then
+    Set up the daily run and the Start menu shortcut for the signed-in user, then
     stop. install-win11.restrict.and.scan.cmd runs this.
 
 .PARAMETER Uninstall
@@ -228,7 +240,7 @@
     - Not a complete CIS implementation: many recommendations are manual or
       environment-specific. Back up the system before the first run.
     - To run it on a schedule, use install-win11.restrict.and.scan.cmd (see above). To
-      change the time: Task Scheduler > win11.restrict.and.scan > Weekly > Triggers.
+      change the time: Task Scheduler > win11.restrict.and.scan > Daily > Triggers.
 
 .EXAMPLE
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win11.restrict.and.scan.ps1
@@ -239,9 +251,11 @@
 
 param(
     [string]$LogDir = (Join-Path $env:ProgramData 'win11.restrict.and.scan'),
-    # Full Safety Scanner and Emsisoft scans whatever the day (the weekly run)
+    # Full Defender, Safety Scanner and Emsisoft scans whatever the day
     [switch]$FullScan,
-    # Set up, or remove, the weekly run and the Start menu shortcut (see
+    # The Daily task: no Notepad or message at the end when all is well
+    [switch]$Scheduled,
+    # Set up, or remove, the daily run and the Start menu shortcut (see
     # install-win11.restrict.and.scan.cmd); nothing else runs
     [switch]$Install,
     [switch]$Uninstall
@@ -474,6 +488,12 @@ function Add-RestartReason {
     if (-not $script:Notes.Contains($note)) {
         $script:Notes.Add($note)
     }
+}
+
+# Full scans and the slow checks (Safety Scanner, DISM, sfc, chkdsk) run on
+# Fridays, and whatever the day with -FullScan
+function Test-FullScanDay {
+    $FullScan -or (Get-Date).DayOfWeek -eq 'Friday'
 }
 
 function Write-Skip {
@@ -2085,7 +2105,7 @@ function Set-ScriptProtection {
 # Task Scheduler's history (each task's History tab, and "Enable All Tasks
 # History") is one event log for all tasks, and Windows ships with it off.
 # On, it records every time a task starts, finishes (with its exit code),
-# is skipped or fails, so you can see whether the weekly run happened. It
+# is skipped or fails, so you can see whether the daily run happened. It
 # also records every task that is created, changed or deleted (events 106,
 # 140, 141), which is how a lot of malware makes itself start again.
 # Event Viewer: Applications and Services Logs > Microsoft > Windows >
@@ -4030,14 +4050,19 @@ function Update-WingetPackage {
 # still works if malware has disabled or damaged Defender. It expires 10 days after
 # download, so a fresh copy is downloaded every run (a few hundred MB), its
 # Microsoft signature checked before it runs, and deleted afterwards. Detect only
-# (/N): it reports, and Defender or you remove. A full scan on Fridays and on the
-# weekly run (-FullScan; can take hours), otherwise a quick scan (minutes). msert.exe scans in its own process, so
+# (/N): it reports, and Defender or you remove. Only on Fridays and with
+# -FullScan, as a full scan (can take hours), since every run downloads it;
+# Defender and Emsisoft scan on the other days. msert.exe scans in its own process, so
 # unlike Defender it can run at below-normal priority. Runs before mywinvscan so
 # the two scans don't compete. Results come from this run's part of
 # %SystemRoot%\debug\msert.log, which Safety Scanner adds to each run.
 function Start-SafetyScan {
-    $full = $FullScan -or (Get-Date).DayOfWeek -eq 'Friday'
-    $why = if ($FullScan) { 'weekly run' } else { 'Friday' }
+    $full = Test-FullScanDay
+    $why = if ($FullScan) { '-FullScan' } else { 'Friday' }
+    if (-not $full) {
+        Write-Host 'Microsoft Safety Scanner runs on Fridays (or with -FullScan); skipped today' -ForegroundColor DarkGray
+        return
+    }
     $url = if ([Environment]::Is64BitOperatingSystem) { 'https://go.microsoft.com/fwlink/?LinkId=212732' } else { 'https://go.microsoft.com/fwlink/?LinkId=212733' }
     $dir = Join-Path $env:TEMP "msert-$PID"
     $exe = Join-Path $dir 'msert.exe'
@@ -4099,8 +4124,8 @@ function Start-SafetyScan {
 # engine from Defender's (Bitdefender's plus Emsisoft's own), so unlike the Safety
 # Scanner it's an independent second opinion. Runs only if C:\EEK exists (the kit
 # is portable: extract it there). Updates its signatures, then scans detect only
-# (no /quarantine or /delete): /full on Fridays and on the weekly run
-# (-FullScan; can take hours), /quick otherwise. Output goes to eek-scan-<date>.log in $LogDir, which opens in Notepad at the
+# (no /quarantine or /delete): /full on Fridays and with -FullScan (can
+# take hours), /quick otherwise. Output goes to eek-scan-<date>.log in $LogDir, which opens in Notepad at the
 # end of the run if anything is found.
 # This runs as administrator, but a folder made at the root of C: can be changed
 # by the user who made it, so a2cmd.exe must be validly signed by Emsisoft, checked
@@ -4139,8 +4164,8 @@ function Start-EmsisoftScan {
         return
     }
 
-    $full = $FullScan -or (Get-Date).DayOfWeek -eq 'Friday'
-    $why = if ($FullScan) { 'weekly run' } else { 'Friday' }
+    $full = Test-FullScanDay
+    $why = if ($FullScan) { '-FullScan' } else { 'Friday' }
     $scan = if ($full) { '/full' } else { '/quick' }
     $log = Join-Path $LogDir "eek-scan-$runStamp.log"
     Write-Banner "a2cmd $scan$(if ($full) { " ($why; this can take hours)" })" '.'
@@ -4168,9 +4193,10 @@ function Start-EmsisoftScan {
     }
 }
 
-# mywinvscan: starts a full Defender scan limited to 80% CPU and returns. The scan
-# runs in a hidden PowerShell of its own, so it keeps going after this script ends;
-# it can take hours. Its output and MpCmdRun's exit code (0 clean or remediated,
+# mywinvscan: starts a Defender scan limited to 80% CPU and returns: full on
+# Fridays and with -FullScan, quick (minutes) otherwise. The scan runs in a
+# hidden PowerShell of its own, so it keeps going after this script ends; a
+# full one can take hours. Its output and MpCmdRun's exit code (0 clean or remediated,
 # 2 needs attention) go to defender-scan-<date>.log in $LogDir. MsMpEng.exe does the
 # scanning and its priority can't be lowered, so the CPU limit is set in Defender's
 # preferences. MpCmdRun.exe isn't on PATH, and the current one is in a versioned
@@ -4212,7 +4238,9 @@ function Start-DefenderScan {
     } catch {
         Write-Host "WARN: could not set the Defender CPU limit; the scan will not be throttled: $($_.Exception.Message)" -ForegroundColor Yellow
     }
-    $opts = @('-Scan', '-ScanType', '2')
+    # ScanType 2 = full, 1 = quick
+    $full = Test-FullScanDay
+    $opts = @('-Scan', '-ScanType', $(if ($full) { '2' } else { '1' }))
     # Ask this scan to follow that limit, on platforms whose MpCmdRun lists the switch
     if ((& $mpcmd -h 2>&1 | Out-String) -match 'CpuThrottling') { $opts += '-CpuThrottling' }
 
@@ -4238,8 +4266,13 @@ function Start-DefenderScan {
 
 # winhealthcheck: checks the Windows component store and system files, and reports
 # what to run next. Output is collected, so nothing shows until each step finishes.
-# Summary matching is English-only.
+# Summary matching is English-only. On Fridays and with -FullScan: it takes a
+# while, and a problem here doesn't appear overnight.
 function Test-WindowsHealth {
+    if (-not (Test-FullScanDay)) {
+        Write-Host 'DISM and sfc run on Fridays (or with -FullScan); skipped today' -ForegroundColor DarkGray
+        return
+    }
     $cmds = @(
         , @('dism.exe', '/Online', '/Cleanup-Image', '/ScanHealth')
         , @('sfc.exe', '/scannow')
@@ -4300,8 +4333,12 @@ function Test-WindowsHealth {
 # windiskcheck: online NTFS check of the system drive (chkdsk /scan): finds problems
 # while Windows runs and queues fixes it can't make online. Exit codes, per
 # Microsoft's chkdsk docs: 0 none found, 1 found and fixed, 2 cleanup done or
-# needed, 3 not fixed
+# needed, 3 not fixed. On Fridays and with -FullScan, like winhealthcheck.
 function Test-SystemDisk {
+    if (-not (Test-FullScanDay)) {
+        Write-Host 'chkdsk runs on Fridays (or with -FullScan); skipped today' -ForegroundColor DarkGray
+        return
+    }
     $drive = $env:SystemDrive
     # chkdsk redraws a "Progress: ... done; Stage: ..." line, one line each once redirected
     Invoke-Native chkdsk.exe $drive, '/scan' -Skip '^\s*Progress: '
@@ -5842,14 +5879,20 @@ function Save-RunStatus {
 # Sets it up for whoever is signed in at the screen, who must be an
 # administrator:
 #   - a copy of this script in C:\Program Files\win11.restrict.and.scan, where only
-#     administrators can change it. It runs with admin rights every week, so
+#     administrators can change it. It runs with admin rights every day, so
 #     a copy anywhere the user (or malware running as them) can write would
 #     hand out admin rights.
-#   - Task Scheduler \win11.restrict.and.scan\Weekly: Fridays at 20:00 with full scans,
-#     with the user's admin rights and no prompt. Wakes the PC from sleep; if
-#     the PC was off or signed out, it runs at the next chance.
-#   - Task Scheduler \win11.restrict.and.scan\Run now: the same, without -FullScan.
-#     A full scan still runs when today is Friday. Started by the Start menu
+#   - Task Scheduler \win11.restrict.and.scan\Daily: every day at 20:00, with
+#     the user's admin rights and no prompt. Full scans when it's Friday,
+#     quick ones otherwise. -Scheduled: quiet when all is well. Wakes the PC from sleep; if the PC was off or
+#     signed out, it runs at the next chance (a missed Friday catches up
+#     with quick scans; the next full ones are the following Friday).
+#   - Task Scheduler \win11.restrict.and.scan\Full scan: the same with
+#     -FullScan, never on a schedule; run-win11.restrict.and.scan.cmd /full
+#     starts it.
+#   - Task Scheduler \win11.restrict.and.scan\Run now: the same as Daily, but
+#     it always ends with the message.
+#     Started by the Start menu
 #     shortcut "My OS Refresher" (no permission prompt). Not on the Desktop:
 #     Controlled folder access protects it and blocks PowerShell making one.
 # Run it again after changing the script, to update the copy.
@@ -5889,7 +5932,7 @@ function Install-Win11RestrictAndScan {
         if ($owner -and $owner -ne $me.User.Value) {
             $name = $owner
             try { $name = ([Security.Principal.SecurityIdentifier]$owner).Translate([Security.Principal.NTAccount]).Value } catch { Write-Verbose 'no account name' }
-            throw "The account signed in at the screen ($name) isn't an administrator, so the weekly run couldn't get admin rights. Make it an administrator, or sign in as one, and run install-win11.restrict.and.scan.cmd again."
+            throw "The account signed in at the screen ($name) isn't an administrator, so the daily run couldn't get admin rights. Make it an administrator, or sign in as one, and run install-win11.restrict.and.scan.cmd again."
         }
     }
 
@@ -5906,14 +5949,22 @@ function Install-Win11RestrictAndScan {
 
     $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $principal = New-ScheduledTaskPrincipal -UserId $me.Name -LogonType Interactive -RunLevel Highest
-    # A run takes hours on the weekly run's full scans, so no time limit
+    # A run takes hours with Friday's full scans, so no time limit
     # beyond Windows' default of 3 days; a second start while one runs is ignored
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
     $action = { param($extra) New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$target`"$extra" }
-    Register-ScheduledTask -TaskPath $TaskFolder -TaskName 'Weekly' -Action (& $action ' -FullScan') `
-        -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Friday -At '20:00') -Principal $principal -Settings $settings `
-        -Description 'win11.restrict.and.scan with full scans, every Friday at 20:00' -Force | Out-Null
+    # The weekly task earlier versions set up (Fridays, with -FullScan)
+    if (Get-ScheduledTask -TaskPath $TaskFolder -TaskName 'Weekly' -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskPath $TaskFolder -TaskName 'Weekly' -Confirm:$false
+        Write-Host '  Removed the old Weekly task' -ForegroundColor Green
+    }
+    Register-ScheduledTask -TaskPath $TaskFolder -TaskName 'Daily' -Action (& $action ' -Scheduled') `
+        -Trigger (New-ScheduledTaskTrigger -Daily -At '20:00') -Principal $principal -Settings $settings `
+        -Description 'win11.restrict.and.scan every day at 20:00: full scans on Fridays, quick ones otherwise' -Force | Out-Null
+    Register-ScheduledTask -TaskPath $TaskFolder -TaskName 'Full scan' -Action (& $action ' -FullScan') `
+        -Principal $principal -Settings $settings `
+        -Description 'win11.restrict.and.scan with full scans whatever the day; not scheduled, run-win11.restrict.and.scan.cmd /full starts it' -Force | Out-Null
     Register-ScheduledTask -TaskPath $TaskFolder -TaskName 'Run now' -Action (& $action '') `
         -Principal $principal -Settings $settings -Description 'win11.restrict.and.scan, started by the Start menu shortcut My OS Refresher' -Force | Out-Null
     # Let the user start "Run now" without admin rights (read and execute), so
@@ -5929,7 +5980,7 @@ function Install-Win11RestrictAndScan {
     } catch {
         Write-Host "  Couldn't let $($me.Name) start the task without a prompt ($($_.Exception.Message)); the shortcut may need Run as administrator" -ForegroundColor Yellow
     }
-    Write-Host "  Weekly run: Fridays at 20:00, as $($me.Name) (Task Scheduler > $($TaskFolder)Weekly)" -ForegroundColor Green
+    Write-Host "  Daily run: 20:00, full scans on Fridays, as $($me.Name) (Task Scheduler > $($TaskFolder)Daily)" -ForegroundColor Green
 
     # The user's own Start menu (AppData\Roaming\Microsoft\Windows\Start Menu\Programs)
     $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) $ShortcutName
@@ -6140,6 +6191,13 @@ try {
     Stop-Transcript | Out-Null
 }
 
+# A clean scheduled run ends here: no problems and no restart needed, so no
+# Notepad window or message waiting each morning. The report and log are
+# saved as usual. Started from the Start menu (no -Scheduled), it carries on.
+if ($Scheduled -and $script:Failures.Count -eq 0 -and $script:RestartReasons.Count -eq 0) {
+    exit 0
+}
+
 # Last of all, so the windows open once the script has nothing left to do.
 # The report includes the Protection history.
 if ($script:StatusFile) {
@@ -6152,7 +6210,7 @@ if ($script:EekLog) {
 }
 
 # Then one message in plain words, after Notepad so it's in front. After a
-# weekly run at night it waits there for the morning. The PC restarts only
+# run at night it waits there for the morning. The PC restarts only
 # if Yes is clicked, when something is actually waiting on a restart.
 $report = if ($script:StatusFile) {
     $script:StatusFile
