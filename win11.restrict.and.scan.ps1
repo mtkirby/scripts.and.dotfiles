@@ -51,7 +51,9 @@
                           copy could not be removed.
        - edge:            Edge's Scareware blocker on, and the same
                           notification, pop-up, download and site blocks, and
-                          PDFs in its own viewer, as Chrome
+                          PDFs in its own viewer, as Chrome. An extension
+                          allowlist ($ApprovedEdgeExtensions): Edge disables
+                          every other extension (they aren't deleted).
        - cis-services:    unneeded services disabled
        - quickassist:     Quick Assist removed (the app, the provisioned package
                           and the Windows capability). Noted when it was
@@ -298,6 +300,21 @@ $script:RegistryUndoSeen = [System.Collections.Generic.HashSet[string]]::new([St
 # ---------------------------------------------------------------
 $ApprovedChromeExtensions = @(
     'cfhdojbkjhnklbpkdaibdccddilifddb'  # Adblock Plus
+    'nmmhkkegccagdldgiimedpiccmgmieda'  # google wallet
+)
+
+# ---------------------------------------------------------------
+# Approved Edge extensions: EDIT THIS LIST
+# Edge disables every other extension in all users' Edge profiles (see
+# Section 1b). Extensions from Edge Add-ons have different IDs from the
+# Chrome Web Store's; one installed in Edge from the Chrome Web Store keeps
+# its Chrome ID. Each run prints the extensions it finds installed, with
+# their IDs. An ID is the 32 letters at the end of the extension's Edge
+# Add-ons URL, or shown in edge://extensions. An empty list disables every
+# extension.
+# ---------------------------------------------------------------
+$ApprovedEdgeExtensions = @(
+    'gmgoamodcdcjnbaobigkjelfplakmdhh'  # Adblock Plus (Edge Add-ons)
 )
 
 # ---------------------------------------------------------------
@@ -775,11 +792,13 @@ function Get-BlockedRemoteAccessSite {
     }
 }
 
-# The extensions installed in every user's Chrome profiles, one object per
-# extension per profile. Chrome's built-in extensions (PDF viewer etc.) aren't
-# in these folders, and aren't affected by the allowlist.
-function Get-InstalledChromeExtension {
-    $pattern = "$env:SystemDrive\Users\*\AppData\Local\Google\Chrome\User Data\*\Extensions\*"
+# The extensions installed in every user's Chrome (or Edge) profiles, one
+# object per extension per profile. Most built-in extensions (PDF viewer etc.)
+# aren't in these folders, and none are affected by the allowlist.
+function Get-InstalledBrowserExtension {
+    param([ValidateSet('Chrome', 'Edge')][string]$Browser = 'Chrome')
+    $userData = if ($Browser -eq 'Edge') { 'Microsoft\Edge\User Data' } else { 'Google\Chrome\User Data' }
+    $pattern = "$env:SystemDrive\Users\*\AppData\Local\$userData\*\Extensions\*"
     foreach ($dir in Get-ChildItem -Path $pattern -Directory -ErrorAction SilentlyContinue) {
         # <id>\<version>\manifest.json; any version's manifest gives the name
         $manifestPath = Get-ChildItem -Path $dir.FullName -Directory -ErrorAction SilentlyContinue |
@@ -814,6 +833,7 @@ function Get-InstalledChromeExtension {
             }
         }
         # ...\Users\<user>\AppData\Local\Google\Chrome\User Data\<profile>\Extensions\<id>
+        # (Edge: ...\Local\Microsoft\Edge\User Data\..., the same depth)
         $profileDir = $dir.Parent.Parent
         [pscustomobject]@{
             Id      = $dir.Name
@@ -1164,7 +1184,7 @@ function Set-ChromeHardening {
 
     # Show what the allowlist will leave on and turn off, so new IDs can be copied
     # into $ApprovedChromeExtensions
-    $installed = @(Get-InstalledChromeExtension)
+    $installed = @(Get-InstalledBrowserExtension -Browser Chrome)
     if ($installed.Count -eq 0) {
         Write-Host "  [Extension] No extensions found in any user's Chrome profiles" -ForegroundColor DarkGray
     }
@@ -1473,6 +1493,43 @@ function Set-EdgeHardening {
     # The same sites as Chrome's URLBlocklist: Chrome Remote Desktop and the
     # remote access programs' sites
     Set-ChromePolicyList -Browser Edge -Name 'URLBlocklist' -Values (@('remotedesktop.google.com') + @(Get-BlockedRemoteAccessSite)) -Description 'Block Chrome Remote Desktop and remote access program sites'
+
+    # Extension allowlist, like Chrome's (Section 1, 2.3): every extension
+    # except $ApprovedEdgeExtensions is blocked. Unlike Chrome's, unapproved
+    # extensions aren't deleted: Edge keeps some of its own built-in
+    # extensions in the same folders, and deleting those would only make Edge
+    # put them back. The policy exempts them, and Edge disables the rest
+    # itself (edge://extensions shows them turned off, with no way to turn
+    # them on). Programs can't add extensions outside the store either
+    # (BlockExternalExtensions).
+    & $set 'BlockExternalExtensions' 1 'Block external (sideloaded) extensions'
+    # Edge's IDs are lowercase too
+    $ids = @($ApprovedEdgeExtensions | ForEach-Object { "$_".Trim().ToLowerInvariant() })
+    foreach ($id in $ids | Where-Object { $_ -cnotmatch '^[a-p]{32}$' }) {
+        Write-Fail "[Edge] '$id' isn't an extension ID (32 letters a-p); left out of the allowlist"
+    }
+    $allowIds = @($ids | Where-Object { $_ -cmatch '^[a-p]{32}$' } | Sort-Object -Unique)
+
+    # Show what the allowlist leaves on and turns off, so new IDs can be
+    # copied into $ApprovedEdgeExtensions
+    $installed = @(Get-InstalledBrowserExtension -Browser Edge)
+    if ($installed.Count -eq 0) {
+        Write-Host "  [Edge] No extensions found in any user's Edge profiles" -ForegroundColor DarkGray
+    }
+    foreach ($group in $installed | Group-Object Id | Sort-Object { $_.Group[0].Name }) {
+        $where = ($group.Group | ForEach-Object { "$($_.User)\$($_.Profile)" }) -join ', '
+        $label = "$($group.Group[0].Name) ($($group.Name))  # $where"
+        if ($allowIds -contains $group.Name) {
+            Write-Host "  [Edge] Approved extension: $label" -ForegroundColor Green
+        } else {
+            Write-Host "  [Edge] Extension turned off unless built in: $label" -ForegroundColor Yellow
+        }
+    }
+    if ($allowIds.Count -eq 0) {
+        Write-Host '  [Edge] No approved extensions listed, so every extension will be disabled' -ForegroundColor Yellow
+    }
+    Set-ChromePolicyList -Browser Edge -Name 'ExtensionInstallAllowlist' -Values $allowIds -Description 'Approved extensions'
+    Set-ChromePolicyList -Browser Edge -Name 'ExtensionInstallBlocklist' -Values @('*') -Description 'Block every extension not on the allowlist'
 }
 
 # ---------------------------------------------------------------
