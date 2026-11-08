@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    VERSION 2026-11-07
+    VERSION 2026-11-08
 
     Keeps a Windows 11 PC used by non-technical person who is a target of scams
     and malware. Task Scheduler runs it every day at 20:00 (full virus scans
