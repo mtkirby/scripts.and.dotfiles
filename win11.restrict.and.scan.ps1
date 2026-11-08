@@ -490,6 +490,13 @@ function Write-Fail {
     $script:Failures.Add("${script:Step}: $Message")
 }
 
+# Items for the end of a FAIL or NOTE, one indented line each, so the
+# report lists them instead of pointing at the log
+function Format-ItemList {
+    param([string[]]$Items)
+    (@($Items) | ForEach-Object { [Environment]::NewLine + '    ' + $_ }) -join ''
+}
+
 # Who the report goes to, for the report and the popup ($HelperContact)
 function Get-HelperName {
     if ("$HelperContact".Trim()) { "$HelperContact".Trim() } else { 'the person who set up this PC' }
@@ -4465,7 +4472,7 @@ function Find-UnsignedProcess {
         })
     $unsigned
     if ($unsigned.Count) {
-        $script:Notes.Add("${script:Step}: $($unsigned.Count) running programs have no valid Authenticode signature (listed above)")
+        $script:Notes.Add("${script:Step}: $($unsigned.Count) running programs have no valid Authenticode signature:$(Format-ItemList $unsigned)")
     }
 }
 
@@ -4518,6 +4525,7 @@ function Find-LolbasCopy {
     $writable = '\\(Temp|Tasks|Tracing|Debug|spool)\\'
 
     $found = 0
+    $alerts = [System.Collections.Generic.List[string]]::new()
     foreach ($p in (Get-Process | Where-Object Path | ForEach-Object Path | Sort-Object -Unique)) {
         $leaf = (Split-Path -Leaf $p).ToLower()
         # The name it was built with; Windows programs give e.g. CertUtil.exe.MUI
@@ -4527,20 +4535,24 @@ function Find-LolbasCopy {
         $s = Get-AuthenticodeSignature -LiteralPath $p
         if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName', $false) -notlike 'Microsoft*') { continue }
         if ($name -ne $leaf) {
-            "ALERT=`"Renamed Windows program=$p is $name`""
+            $m = "Renamed Windows program=$p is $name"
+            "ALERT=`"$m`""
+            $alerts.Add($m)
             $found += 1
             continue
         }
         if ($where[$name] | Where-Object { $p -like $_ }) { continue }
         if ((Split-Path -Parent $p) -eq $env:SystemRoot) { continue }
         if (($trusted | Where-Object { $p -like $_ }) -and $p -notmatch $writable) { continue }
-        "ALERT=`"Windows program=$name running from $p, outside its usual folders`""
+        $m = "Windows program=$name running from $p, outside its usual folders"
+        "ALERT=`"$m`""
+        $alerts.Add($m)
         $found += 1
     }
 
     if ($found) {
         "Found $found renamed or relocated Windows programs"
-        Write-Fail "Found $found renamed or relocated Windows programs; see the ALERT lines above"
+        Write-Fail "Found $found renamed or relocated Windows programs:$(Format-ItemList $alerts)"
     } else {
         "No renamed or relocated Windows programs running ($($where.Count) LOLBAS programs checked)"
     }
@@ -4563,7 +4575,8 @@ function Test-StartupEntry {
     Write-Banner 'Startup Entries Running LOLBAS Programs' '.'
     $ErrorActionPreference = 'SilentlyContinue'
     $count = @{ found = 0; noted = 0 }
-    function Alert([string]$m) { "ALERT=`"$m`""; $count.found += 1 }
+    $alerts = [System.Collections.Generic.List[string]]::new()
+    function Alert([string]$m) { "ALERT=`"$m`""; $alerts.Add($m); $count.found += 1 }
     function Note([string]$m) { "NOTE=`"$m`""; $count.noted += 1 }
 
     $names = @{}
@@ -4712,7 +4725,7 @@ function Test-StartupEntry {
 
     if ($count.found) {
         "Found $($count.found) startup entries or shortcuts with signs of misuse, and $($count.noted) to review ($shortcuts shortcuts checked)"
-        Write-Fail "Found $($count.found) startup entries or shortcuts with signs of misuse; see the ALERT lines above"
+        Write-Fail "Found $($count.found) startup entries or shortcuts with signs of misuse:$(Format-ItemList $alerts)"
     } elseif ($count.noted) {
         "No startup entries or shortcuts show signs of misuse; $($count.noted) listed above to review ($shortcuts shortcuts checked)"
     } else {
@@ -4730,7 +4743,8 @@ function Test-DriverSignature {
     Write-Banner 'Windows Driver Signature Check' '.'
     $ErrorActionPreference = 'SilentlyContinue'
     $count = @{ found = 0; third = 0 }
-    function Alert([string]$m) { "ALERT=`"$m`""; $count.found += 1 }
+    $alerts = [System.Collections.Generic.List[string]]::new()
+    function Alert([string]$m) { "ALERT=`"$m`""; $alerts.Add($m); $count.found += 1 }
     function Note([string]$m) { "NOTE=`"$m`"" }
     # Kernel paths look like \SystemRoot\..., \??\C:\..., \Windows\..., or System32\...
     function Norm([string]$p) {
@@ -4840,7 +4854,7 @@ function Test-DriverSignature {
 
     if ($count.found) {
         "Found $($count.found) driver problems"
-        Write-Fail "Found $($count.found) driver problems; see the ALERT lines above"
+        Write-Fail "Found $($count.found) driver problems:$(Format-ItemList $alerts)"
     } elseif ($count.third) {
         "No driver problems found, and $($count.third) third-party drivers are validly signed"
     } else {
