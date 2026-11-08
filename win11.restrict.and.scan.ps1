@@ -110,9 +110,10 @@
        - exploitprotect:  Exploit protection system settings back to
                           "Use default", alerting on any that were turned off
        - defendersettings: real-time, cloud, sample submission, potentially
-                          unwanted apps, network protection, Dev Drive,
-                          Controlled folder access (also protecting each
-                          user's Desktop, Downloads, OneDrive and
+                          unwanted apps, network protection, antivirus
+                          allowed on Dev Drives, Controlled folder access
+                          (also protecting each user's Desktop, Downloads,
+                          OneDrive and
                           $ExtraProtectedFolders, without duplicating
                           Windows' own entries); checks Tamper protection
        - reputation:      App & browser control > Reputation-based protection:
@@ -829,7 +830,11 @@ function Disable-ServiceIfExists {
         [Parameter(Mandatory)][string]$Name,
         [string]$Description
     )
-    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    # Get-Service -Name falls back to display names, so 'Browser' finds the
+    # bowser driver (display name "Browser") on Windows 11, where the Computer
+    # Browser service no longer exists. Only an exact service name counts.
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq $Name } | Select-Object -First 1
     if ($svc) {
         # Some services refuse a startup-type change even for admins; say so
         # rather than reporting them disabled
@@ -3243,11 +3248,12 @@ function Reset-ExploitProtection {
 #     isn't quite malware, the "PUA" switch in Windows Security.
 #   Network protection - blocks programs, not only browsers, from connecting
 #     to sites Microsoft has marked malicious. Needs cloud-delivered protection.
-#   Dev Drive protection - Dev Drives (a fast volume type for code) are
-#     scanned in performance mode, which checks files just after opening
-#     them instead of before. Without it a Dev Drive gets regular scanning,
-#     or none if antivirus has been excluded from it, so this also makes sure
-#     antivirus is allowed on Dev Drives. Needs Windows 11 23H2 or later.
+#   Antivirus on Dev Drives - Dev Drives (a fast volume type for code) can
+#     have antivirus excluded; this makes sure it's allowed. Needs Windows 11
+#     23H2 or later. Defender's "Dev Drive protection" (performance mode) is
+#     deliberately not turned on: it scans a Dev Drive's files after they're
+#     opened instead of before, which is faster but weaker than regular
+#     scanning, and this PC doesn't need the speed.
 #   Controlled folder access - only trusted programs can change files in
 #     Documents, Pictures, Videos, Music, Desktop and Favorites, which stops
 #     ransomware encrypting them. Also added: each user's Desktop and
@@ -3295,10 +3301,6 @@ function Set-DefenderSetting {
             'Network protection' = @{
                 Set   = @{ EnableNetworkProtection = 'Enabled' }
                 Check = { param($p) "$($p.EnableNetworkProtection)" -in '1', 'Enabled', 'Block' }
-            }
-            'Dev Drive protection' = @{
-                Set   = @{ PerformanceModeStatus = 'Enabled' }
-                Check = { param($p) "$($p.PerformanceModeStatus)" -in '0', 'Enabled' }
             }
             'Controlled folder access' = @{
                 Set   = @{ EnableControlledFolderAccess = 'Enabled' }
@@ -3626,14 +3628,19 @@ function Save-ProtectionHistory {
 
     Write-Banner "Defender Protection History (last $historyDays days)" '.'
 
+    # The LSASS credential-stealing rule, and where Windows' own programs live
+    $lsassRule = '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2'
+    $windowsDirs = @("$env:SystemRoot\System32\*", "$env:SystemRoot\SysWOW64\*")
+
     $since = (Get-Date).AddDays(-$historyDays)
-    $report = [System.Collections.Generic.List[string]]::new()
+    $report =[System.Collections.Generic.List[string]]::new()
     $report.Add("Defender Protection History for $env:COMPUTERNAME")
     $report.Add("$($since.ToString('yyyy-MM-dd HH:mm')) to $((Get-Date).ToString('yyyy-MM-dd HH:mm')), newest first")
     $report.Add("Written by win11.restrict.and.scan.ps1. Source: Event Viewer > Applications and Services Logs >")
     $report.Add("Microsoft > Windows > Windows Defender > Operational")
     $report.Add('')
     $historySummary = ''
+    $unknownLsass = 0
 
     if (-not (Get-WinEvent -ListLog $historyLog -ErrorAction SilentlyContinue)) {
         $historySummary = "Defender's event log isn't available on this PC"
@@ -3671,27 +3678,61 @@ function Save-ProtectionHistory {
             }
             if ($e.Id -eq 1117 -and $data['Action Name']) { $title += " -> $($data['Action Name'])" }
 
-            # Failures to remove a threat need attention first
-            $flag = if ($e.Id -in 1118, 1119) { '!! ' } else { '' }
-            $report.Add("$($e.TimeCreated.ToString('yyyy-MM-dd HH:mm'))  $flag$title")
             # Threat paths come as e.g. "file:_C:\x.exe;process:_pid:123,ProcessStart:..."
             # Keep the files and drop the process entries; ASR paths are plain
             $path = (@("$($data['Path'])" -split ';' |
                 Where-Object { $_ -and $_ -notlike 'process:_*' } |
                 ForEach-Object { $_ -replace '^\w+:_', '' }) -join ', ')
-            if ($path) { $report.Add("    File:    $path") }
-            if ($data['Process Name']) { $report.Add("    Process: $($data['Process Name'])") }
+
+            # The LSASS rule's events name the program that tried to read
+            # lsass.exe as the Path and lsass.exe as the Process. Windows' own
+            # programs (often svchost.exe) set it off all the time by asking
+            # for more access than they need; the rule just removes the read
+            # right. Anything else reading lsass.exe is worth a look.
+            $isLsass = $e.Id -in 1121, 1122 -and "$($data['ID'])".ToLowerInvariant() -eq $lsassRule
+            $fromWindows = $isLsass -and $path -and $path -notlike '*,*' -and
+                [bool](@($windowsDirs | Where-Object { $path -like $_ }).Count)
+
+            # Failures to remove a threat, and lsass.exe reads by programs
+            # that aren't Windows' own, need attention first
+            if ($isLsass -and -not $fromWindows) { $unknownLsass++ }
+            $flag = if ($e.Id -in 1118, 1119 -or ($isLsass -and -not $fromWindows)) { '!! ' } else { '' }
+            $report.Add("$($e.TimeCreated.ToString('yyyy-MM-dd HH:mm'))  $flag$title")
+            if ($isLsass) {
+                $reader = if ($path) { $path -replace '^.*\\', '' } else { 'A program' }
+                $target = if ($data['Process Name']) { "$($data['Process Name'])" -replace '^.*\\', '' } else { 'lsass.exe' }
+                if ($e.Id -eq 1121) {
+                    $report.Add("    $reader was blocked from reading $target memory")
+                } else {
+                    $report.Add("    $reader tried to read $target memory (audit only, not blocked)")
+                }
+                if ($path) { $report.Add("    Program: $path") }
+                if ($fromWindows) {
+                    $report.Add("    Normal: a Windows program asking for more access than it needs. No action")
+                    $report.Add("    needed. Don't add it as an exclusion.")
+                } else {
+                    $report.Add("    Not a Windows program: check what it is. Tools that steal passwords do this.")
+                }
+            } else {
+                if ($path) { $report.Add("    File:    $path") }
+                if ($data['Process Name']) { $report.Add("    Process: $($data['Process Name'])") }
+            }
             if ($data['Detection User']) { $report.Add("    User:    $($data['Detection User'])") }
             $report.Add('')
         }
         if ($events | Where-Object { $_.Id -in 1118, 1119 }) {
             $historySummary += ", including threats Defender couldn't remove (marked !!)"
         }
+        if ($unknownLsass -gt 0) {
+            $historySummary += ", including $unknownLsass lsass.exe read(s) by non-Windows programs (marked !!)"
+        }
     }
 
     $report.Add('')
     $report.Add('To allow a program an ASR rule blocked (run as admin):')
     $report.Add("    Add-MpPreference -AttackSurfaceReductionOnlyExclusions 'C:\path\program.exe'")
+    $report.Add('Never exclude Windows programs (C:\Windows\...) such as svchost.exe: an exclusion')
+    $report.Add('turns off every ASR rule for that program, and the lsass.exe blocks are normal.')
 
     try {
         Set-Content -LiteralPath $script:HistoryFile -Value $report -Encoding UTF8 -ErrorAction Stop
