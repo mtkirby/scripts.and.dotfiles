@@ -1,4 +1,4 @@
-# 20261102 Kirby
+# 20261108 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -4048,7 +4048,33 @@ fi
 if uname -os 2>/dev/null|grep -qiE 'sunos|illumos'
 then
     alias free="top -d 2 |grep -E '^Memory:'|head -1"
-    alias patchopenindiana='sudo pkg update'
+
+    ##
+    # pkg update exits 4 when there's nothing to update. An update to the OS
+    # itself goes into a new boot environment, which is only used after a reboot.
+    function patchopenindiana()
+    {
+        mkbanner "patchopenindiana" '#' yellow
+        local rc be
+        local -a asroot=(sudo)
+        (( EUID == 0 )) && asroot=()
+        "${asroot[@]}" pkg update
+        rc=$?
+        case $rc in
+            0) ;;
+            4) echo "No updates available" ;;
+            *)
+                echo "FAIL: pkg update exited with $rc"
+                return "$rc"
+                ;;
+        esac
+        # beadm flags: N = active now, R = active on reboot
+        be="$(beadm list -H 2>/dev/null |awk -F';' '$3 ~ /R/ && $3 !~ /N/ { print $1 }')"
+        if [[ -n "$be" ]]
+        then
+            echo "REBOOT to switch to the updated boot environment $be"
+        fi
+    }
 
     ##
     function openindianamodpkgcheck()
@@ -4220,6 +4246,41 @@ then
                 printf '%s\n' "$why"
             fi
         done
+    }
+
+    ##
+    function myopenindianacleanupzfs()
+    {
+        mkbanner "myopenindianacleanupzfs" '#' yellow
+        local -a asroot=(sudo)
+        (( EUID == 0 )) && asroot=()
+        for snapshot in $("${asroot[@]}" zfs list -H -t snapshot -o name 2>/dev/null)
+        do
+            # zfs destroy -nv lists snapshots that would be destroyed, one per line
+            if "${asroot[@]}" zfs destroy -nv "$snapshot" 2>/dev/null |grep -qv '^would destroy'
+            then
+                echo "DESTROYING snapshot $snapshot"
+                "${asroot[@]}" zfs destroy "$snapshot"
+            fi
+        done
+        "${asroot[@]}" zpool list -H -o name |while read -r pool
+        do
+            "${asroot[@]}" zpool trim "$pool"
+            "${asroot[@]}" zpool scrub "$pool"
+        done
+        "${asroot[@]}" zpool status -v
+    }
+
+    ##
+    function myopenindianapatchall()
+    {
+        myopenindianacleanupzfs 2>&1 |tee /tmp/myopenindianacleanupzfs.log
+        patchpkgin 2>&1 |tee /tmp/patchpkgin.log
+        patchmods
+        myunixclam 2>&1 |tee /tmp/myunixclam.log
+        patchopenindiana 2>&1 |tee /tmp/patchopenindiana.log
+        myopenindianaprocsigs 2>&1 |tee /tmp/myopenindianaprocsigs.log
+        openindianamodpkgcheck 2>&1 |tee /tmp/openindianamodpkgcheck.log
     }
 
 fi
