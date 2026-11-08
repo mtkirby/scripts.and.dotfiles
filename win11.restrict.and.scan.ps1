@@ -301,6 +301,8 @@ $script:RegistryUndoSeen = [System.Collections.Generic.HashSet[string]]::new([St
 $ApprovedChromeExtensions = @(
     'cfhdojbkjhnklbpkdaibdccddilifddb'  # Adblock Plus
     'nmmhkkegccagdldgiimedpiccmgmieda'  # google wallet
+    'jmjflgjpcpepeafmmgdpfkogkghcpiha'  # Edge relevant text changes
+    'ghbmnnjooekpmoecnnnilnnbdlolhkhi'  # Google Docs Offline
 )
 
 # ---------------------------------------------------------------

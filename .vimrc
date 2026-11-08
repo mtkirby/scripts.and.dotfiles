@@ -1,5 +1,11 @@
-" 20261006 Kirby
+" 20261108 Kirby
 "
+" --- ENCODING ---
+" This file has UTF-8 symbols (listchars, showbreak). Vim on Windows/Cygwin
+" can start in latin1 when LANG isn't a UTF-8 locale, and then misreads them
+" (E1511, E595). Set the encoding first, then say this file is UTF-8.
+set encoding=utf-8
+scriptencoding utf-8
 "
 " --- VISUALS & WHITESPACE ---
 "set list                    " Show hidden characters 
