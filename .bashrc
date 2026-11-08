@@ -4253,7 +4253,13 @@ then
     {
         mkbanner "myopenindianacleanupzfs" '#' yellow
         local -a asroot=(sudo)
+        local old_be snapshot pool
         (( EUID == 0 )) && asroot=()
+
+        "${asroot[@]}" beadm list -H | awk -F';' '$3 !~ /[NR]/ {print $1}' | while read -r old_be; do
+            echo "Removing old boot environment: ${old_be}"
+            "${asroot[@]}" beadm destroy -F "${old_be}"
+        done
         for snapshot in $("${asroot[@]}" zfs list -H -t snapshot -o name 2>/dev/null)
         do
             # zfs destroy -nv lists snapshots that would be destroyed, one per line
