@@ -1402,6 +1402,66 @@ then
     }
 
     ##
+    # Like patchmacvs and patchwinvs: update VS Code's extensions, then delete
+    # the old versions it has marked obsolete (VS Code only deletes them
+    # itself at its next start). Also cleans ~/.vscode-server, where VS Code
+    # Remote-SSH keeps extensions on this machine; the VS Code that connects
+    # updates those. Works on the current user's extensions, so run it as that
+    # user, not root.
+    function patchlinvs()
+    {
+        mkbanner "patchlinvs" '#' yellow
+        local code extdir obsolete ext
+
+        if pgrep -x code >/dev/null 2>&1
+        then
+            echo "FAIL: must exit VS Code first"
+            return 1
+        fi
+
+        # Update extensions (code from a .deb, .rpm, tarball or snap)
+        code="$(type -P code)"
+        if [[ -n "$code" ]]
+        then
+            mkbanner "VS Code Extension Update" '.' yellow
+            "$code" --update-extensions || return 1
+        else
+            echo "SKIPPING extension update.  No VS Code (code) installed"
+        fi
+
+        # Remove obsolete extensions
+        if ! command -v jq >/dev/null 2>&1
+        then
+            echo "SKIPPING obsolete extension cleanup.  Install jq"
+            return 0
+        fi
+        for extdir in "$HOME/.vscode/extensions" "$HOME/.vscode-server/extensions"
+        do
+            obsolete="$extdir/.obsolete"
+            [[ -f "$obsolete" ]] || continue
+            # A Remote-SSH session still using its extensions
+            if [[ "$extdir" == */.vscode-server/* ]] && pgrep -u "$(id -u)" -f "$HOME/.vscode-server/" >/dev/null 2>&1
+            then
+                echo "SKIPPING $extdir.  A VS Code Remote session is connected"
+                continue
+            fi
+            jq -r 'to_entries[] | select(.value == true) | .key' "$obsolete" |
+            while IFS= read -r ext
+            do
+                case "$ext" in
+                    ""|.|..|*/*) continue ;;
+                esac
+
+                if [[ -d "$extdir/$ext" && ! -L "$extdir/$ext" ]]
+                then
+                    echo "Removing obsolete extension: $ext"
+                    rm -rf -- "${extdir:?}/${ext:?}" >/dev/null 2>&1
+                fi
+            done
+        done
+    }
+
+    ##
     function mylinuxprocsigs()
     {
         # Linux programs aren't signed, so list running programs that are
