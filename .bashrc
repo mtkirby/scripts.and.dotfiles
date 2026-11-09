@@ -1354,6 +1354,54 @@ then
 }
 
     ##
+    function patchapk()
+    {
+        mkbanner "patchapk" '#' yellow
+        if ! command -v apk >/dev/null 2>&1
+        then
+            echo "FAIL: apk not found"
+            return 1
+        fi
+        apk update || return
+        apk upgrade
+    }
+
+    ##
+    # Homebrew on Linux. Homebrew refuses to run as root, so when run by root
+    # (as mynixpatchall is) it runs as the user who owns the Homebrew folder.
+    function patchlinuxbrew()
+    {
+        mkbanner "patchlinuxbrew" '#' yellow
+        local brew prefix owner
+        local -a asowner=()
+        for brew in "$(type -P brew)" /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew" ''
+        do
+            [[ -x "$brew" ]] && break
+        done
+        if [[ -z "$brew" ]]
+        then
+            echo "FAIL: Homebrew not found"
+            return 1
+        fi
+        prefix="${brew%/bin/brew}"
+        owner="$(stat -c %U "$prefix" 2>/dev/null)"
+        if [[ -z "$owner" || "$owner" == root ]]
+        then
+            echo "FAIL: $prefix is owned by ${owner:-nobody}; Homebrew won't run as root"
+            return 1
+        fi
+        [[ "$(id -un)" != "$owner" ]] && asowner=(sudo -u "$owner" -H)
+        # From the prefix, since the owner may not be able to read root's current directory
+        (
+            cd "$prefix" || exit 1
+            "${asowner[@]}" "$brew" update
+            "${asowner[@]}" "$brew" upgrade
+            "${asowner[@]}" "$brew" cleanup
+            "${asowner[@]}" "$brew" doctor
+        )
+    }
+
+    ##
     function mylinuxprocsigs()
     {
         # Linux programs aren't signed, so list running programs that are
@@ -1580,12 +1628,15 @@ function myunixclam()
             if command -v apt-get >/dev/null 2>&1
             then
                 hint="sudo apt-get install -y clamav clamav-freshclam"
+            elif command -v apk >/dev/null 2>&1
+            then
+                hint="apk add clamav (as root)"
             else
                 hint="sudo dnf install -y clamav clamav-update"
             fi
             ;;
         *)
-            echo "FAIL: myunixclam is for FreeBSD, OpenIndiana, Fedora, and Ubuntu"
+            echo "FAIL: myunixclam is for FreeBSD, OpenIndiana, Fedora, Ubuntu, and Alpine"
             return 1
             ;;
     esac
@@ -1716,6 +1767,94 @@ EOF
         $(( elapsed / 3600 )) $(( elapsed % 3600 / 60 )) $(( elapsed % 60 ))
     mkbanner "CLAMSCAN RESULTS" '-' yellow
     cat "$log"
+}
+
+##################################################
+# Like mymacpatchall and mywinpatchall, for FreeBSD, OpenBSD, NetBSD,
+# OpenIndiana, Haiku, and Linux with apt, dnf or apk: patch the OS and its
+# packages (and pkgsrc where installed), then patchmods, then the ClamAV,
+# running-program and kernel-module checks this OS has. Each step's output
+# is also saved to /tmp/<step>.log.
+function mynixpatchall()
+{
+    mkbanner "mynixpatchall" '#' yellow
+    local os pm
+    os="$(uname -s 2>/dev/null)"
+
+    case "$os" in
+        Linux)
+            # patchapt, patchdnf and patchapk don't use sudo
+            if (( EUID != 0 ))
+            then
+                echo "FAIL: run as root (sudo -i), then mynixpatchall"
+                return 1
+            fi
+            for pm in apt dnf apk ''
+            do
+                [[ -n "$pm" ]] && command -v "$pm" >/dev/null 2>&1 && break
+            done
+            if [[ -z "$pm" ]]
+            then
+                echo "FAIL: no apt, dnf, or apk found"
+                return 1
+            fi
+            "patch$pm" 2>&1 |tee "/tmp/patch$pm.log"
+            if command -v brew >/dev/null 2>&1 || [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]
+            then
+                patchlinuxbrew 2>&1 |tee /tmp/patchlinuxbrew.log
+            fi
+            ;;
+        FreeBSD) patchfreebsd 2>&1 |tee /tmp/patchfreebsd.log ;;
+        OpenBSD) patchopenbsd 2>&1 |tee /tmp/patchopenbsd.log ;;
+        NetBSD)  patchpkgin 2>&1 |tee /tmp/patchpkgin.log ;;
+        SunOS)
+            # It has its own order (ZFS cleanup first, pkg update after the scan)
+            myopenindianapatchall
+            return
+            ;;
+        Haiku)   patchhaiku 2>&1 |tee /tmp/patchhaiku.log ;;
+        Darwin)
+            echo "FAIL: on macOS, run mymacpatchall"
+            return 1
+            ;;
+        CYGWIN*)
+            echo "FAIL: on Windows, run mywinpatchall"
+            return 1
+            ;;
+        *)
+            echo "FAIL: mynixpatchall is for FreeBSD, OpenBSD, NetBSD, OpenIndiana, Haiku, and Linux (apt, dnf, apk)"
+            return 1
+            ;;
+    esac
+
+    # pkgsrc, where it's installed alongside the OS's packages (NetBSD's is above)
+    if [[ "$os" != NetBSD ]] &&
+        { command -v pkgin >/dev/null 2>&1 || [[ -x /opt/pkg/bin/pkgin || -x /opt/local/bin/pkgin ]]; }
+    then
+        patchpkgin 2>&1 |tee /tmp/patchpkgin.log
+    fi
+
+    mkbanner "patchmods" '#' yellow
+    patchmods
+
+    # myunixclam knows these OSes' ClamAV packages
+    case "$os" in
+        Linux|FreeBSD) myunixclam 2>&1 |tee /tmp/myunixclam.log ;;
+    esac
+
+    # Running programs and kernel modules not from a package, or changed since
+    case "$os" in
+        Linux)
+            mylinuxprocsigs 2>&1 |tee /tmp/mylinuxprocsigs.log
+            modpkgcheck 2>&1 |tee /tmp/modpkgcheck.log
+            ;;
+        FreeBSD)
+            myfreebsdprocsigs 2>&1 |tee /tmp/myfreebsdprocsigs.log
+            freebsdmodpkgcheck 2>&1 |tee /tmp/freebsdmodpkgcheck.log
+            ;;
+        OpenBSD) myopenbsdprocsigs 2>&1 |tee /tmp/myopenbsdprocsigs.log ;;
+        NetBSD)  mynetbsdprocsigs 2>&1 |tee /tmp/mynetbsdprocsigs.log ;;
+    esac
 }
 
 ##################################################
@@ -3754,8 +3893,28 @@ fi
 if uname -s 2>/dev/null|grep -q BSD
 then
     alias free="top -d1 |grep -E '^Mem:|^Memory:'|head -1"
-    alias patchfreebsd='sudo pkg update; echo -e "y\ny\n" |sudo pkg upgrade'
-    alias patchopenbsd='sudo syspatch; sudo fw_update; sudo pkg_add -u'
+
+    ##
+    # Functions, not aliases, so mynixpatchall can call them
+    function patchfreebsd()
+    {
+        mkbanner "patchfreebsd" '#' yellow
+        local -a asroot=(sudo)
+        (( EUID == 0 )) && asroot=()
+        "${asroot[@]}" pkg update
+        echo -e "y\ny\n" |"${asroot[@]}" pkg upgrade
+    }
+
+    ##
+    function patchopenbsd()
+    {
+        mkbanner "patchopenbsd" '#' yellow
+        local -a asroot=(sudo)
+        (( EUID == 0 )) && asroot=()
+        "${asroot[@]}" syspatch
+        "${asroot[@]}" fw_update
+        "${asroot[@]}" pkg_add -u
+    }
 
     ##
     function freebsdmodpkgcheck()
