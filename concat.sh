@@ -402,16 +402,29 @@ for i in "${!MP4S[@]}"; do
   part="part_${i}.ts"
   echo "Encoding part $((i+1))/${#MP4S[@]}: ${MP4S[$i]}..."
   # -hwaccel videotoolbox decodes on the GPU/media engine instead of the
-  # CPU; -hwaccel_output_format nv12 brings frames back into system memory
-  # in a format the software scale/pad filter chain above already expects,
-  # so no filter changes are needed. h264_videotoolbox is the matching
-  # hardware encoder — it's bitrate-based (no -crf), hence $BITRATE above.
-  ffmpeg -y -hwaccel videotoolbox -hwaccel_output_format nv12 \
-    -i "${MP4S[$i]}" -vf "$VF" -af "$AF" \
-    -c:v h264_videotoolbox -b:v "$BITRATE" -c:a aac -b:a 192k \
-    -avoid_negative_ts make_zero \
-    -sn \
-    -f mpegts "$part"
+  # CPU. No -hwaccel_output_format: ffmpeg copies frames back into system
+  # memory in whatever format the decoder produced (nv12 for 8-bit, p010 for
+  # 10-bit), and the filter chain and -pix_fmt yuv420p convert from there.
+  # Forcing nv12 breaks 10-bit sources such as 10-bit AV1 ("Unsupported or
+  # mismatching pixel format"). If hardware decoding fails anyway, the file
+  # is encoded again with software decoding. h264_videotoolbox is the
+  # matching hardware encoder — it's bitrate-based (no -crf), hence
+  # $BITRATE above.
+  #
+  # -c:v h264_videotoolbox -b:v "$BITRATE" -c:a aac -b:a 192k \
+  encode_part() {
+    ffmpeg -y "$@" \
+      -i "${MP4S[$i]}" -vf "$VF" -af "$AF" \
+      -c:v libx264 -pix_fmt yuv420p \
+      -b:v "$BITRATE" -c:a aac -b:a 192k \
+      -avoid_negative_ts make_zero \
+      -sn \
+      -f mpegts "$part"
+  }
+  if ! encode_part -hwaccel videotoolbox; then
+    echo "Hardware decoding failed for ${MP4S[$i]}; retrying with software decoding..." >&2
+    encode_part
+  fi
   PARTS+=("$part")
   printf "file '%s'\n" "$part" >> concat_list.txt
 done

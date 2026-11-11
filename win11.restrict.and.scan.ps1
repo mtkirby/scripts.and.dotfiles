@@ -303,6 +303,7 @@ $ApprovedChromeExtensions = @(
     'nmmhkkegccagdldgiimedpiccmgmieda'  # google wallet
     'jmjflgjpcpepeafmmgdpfkogkghcpiha'  # Edge relevant text changes
     'ghbmnnjooekpmoecnnnilnnbdlolhkhi'  # Google Docs Offline
+    'efaidnbmnnnibpcajpcglclefindmkaj'  # Adobe Acrobat
 )
 
 # ---------------------------------------------------------------
