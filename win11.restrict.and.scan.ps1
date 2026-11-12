@@ -18,7 +18,7 @@
       entries and Defender exclusions that aren't approved.
     - Updates Windows, Office, Chrome, Edge, Store apps, winget and
       Chocolatey packages. Chrome and Edge ask to be relaunched after an
-      update, then relaunch by themselves a day later.
+      update, then relaunch by themselves an hour later.
     - Scans with Defender and Emsisoft, and checks disks, BitLocker, startup
       entries, and unsigned programs and drivers. On Fridays also Microsoft
       Safety Scanner, and checks Windows' own files (DISM, sfc, chkdsk).
@@ -395,7 +395,7 @@ $AdobeDisableJavaScript = $true
 # not yet sent is lost.
 # ---------------------------------------------------------------
 $BrowserRelaunchNotification = 2
-$BrowserRelaunchHours = 24
+$BrowserRelaunchHours = 1  # 1 is the shortest the browsers allow
 
 # ---------------------------------------------------------------
 # Programs allowed to change files in folders that Controlled folder access
