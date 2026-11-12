@@ -16,7 +16,9 @@
     - Undoes what scams and malware change: removes Quick Assist and remote
       access programs (AnyDesk, TeamViewer...), proxy settings, hosts file
       entries and Defender exclusions that aren't approved.
-    - Updates Windows, Office, Store apps, winget and Chocolatey packages.
+    - Updates Windows, Office, Chrome, Edge, Store apps, winget and
+      Chocolatey packages. Chrome and Edge ask to be relaunched after an
+      update, then relaunch by themselves a day later.
     - Scans with Defender and Emsisoft, and checks disks, BitLocker, startup
       entries, and unsigned programs and drivers. On Fridays also Microsoft
       Safety Scanner, and checks Windows' own files (DISM, sfc, chkdsk).
@@ -25,7 +27,8 @@
       the Start menu), the report opens in Notepad with a plain-words
       message saying whether to send it to the helper and whether to
       restart. It never restarts the PC by itself, and the registry values
-      it changes are saved to an undo file (.reg).
+      it changes are saved to an undo file (.reg). Also a list of the
+      installed software as CPEs, for OpenCVE.
 
 .DESCRIPTION
     Every step runs even if an earlier one fails; the summary at the end lists what failed.
@@ -139,6 +142,21 @@
        - patchmsstore:    winget upgrades from the Microsoft Store, then a Store
                           update scan
        - patchwinget:     winget upgrade --all
+       - patchbrowsers:   Chrome and Edge: their updaters' services and tasks
+                          turned back on if they were off, started now, and
+                          waited for (up to 10 minutes) when the browser is
+                          out of date. Fails if it still is. An update
+                          waiting for the browser to be closed is a note
+                          and a line in the message at the end; the browser
+                          asks to be relaunched ($BrowserRelaunchNotification)
+       - softwarelist:    after the updates, installed-software-<PC name>.csv
+                          in the log folder, replaced each run: every
+                          installed program (Windows, Programs and Features,
+                          Store apps, winget, Chocolatey) as a CPE, for
+                          OpenCVE. From $SoftwareCpeMap, or guessed. And
+                          installed-programs-<PC name>.txt: just the names,
+                          as Settings > Apps, the Store, winget list and
+                          choco list show them
     5. msert:             Microsoft Safety Scanner, downloaded fresh, detect only:
                           a full scan, on Fridays and with -FullScan only (each
                           run downloads a few hundred MB)
@@ -279,6 +297,12 @@ $script:RestartReasons = [System.Collections.Generic.List[string]]::new()
 $script:HistoryFile = $null
 # Set by the statusfile step. Written every run; not opened.
 $script:StatusFile = $null
+# Set by the patchbrowsers step: browsers with an update waiting for them to
+# be closed and opened again, for the message at the end
+$script:BrowserRelaunch = [System.Collections.Generic.List[string]]::new()
+# Set by the softwarelist step; their paths go in the report
+$script:SoftwareList = $null
+$script:ProgramList = $null
 # Set by the eekscan step when Emsisoft finds something; also opened at the end
 $script:EekLog = $null
 # Set by the dep step when the boot setting changed and Windows is not running
@@ -358,6 +382,20 @@ $OfficeBlockedFileBehavior = 1
 #   $false = on (Adobe's default)
 # ---------------------------------------------------------------
 $AdobeDisableJavaScript = $true
+
+# ---------------------------------------------------------------
+# Chrome and Edge: once an update has downloaded (see Sections 1 and 1b
+# and the patchbrowsers step). An update only takes over when the browser
+# is closed and opened again; until then the old version, with the holes
+# the update fixes, keeps running.
+#   1 = the browser asks to be relaunched, again and again, until it is
+#   2 = it asks, then relaunches by itself once $BrowserRelaunchHours
+#       have passed, counting down in its prompt
+# Open tabs come back after a relaunch; anything typed into a page and
+# not yet sent is lost.
+# ---------------------------------------------------------------
+$BrowserRelaunchNotification = 2
+$BrowserRelaunchHours = 24
 
 # ---------------------------------------------------------------
 # Programs allowed to change files in folders that Controlled folder access
@@ -468,6 +506,45 @@ $ApprovedDefenderExclusions = @{
         'C:\EEK'
     )
 }
+
+# ---------------------------------------------------------------
+# Installed software as CPEs, for OpenCVE (see the softwarelist step)
+# Windows doesn't record a program's CPE, so the step guesses one from its
+# winget or Chocolatey ID, or its publisher and name, unless it's listed
+# here. Match is a regex tried against the program's name and IDs (case
+# doesn't matter); Cpe is the vendor:product NVD and OpenCVE use (look one
+# up at nvd.nist.gov/products/cpe/search). The first match wins. Add a line
+# when the file shows a guess that's wrong.
+# ---------------------------------------------------------------
+$SoftwareCpeMap = @(
+    @{ Match = '^7-?zip\b'; Cpe = '7-zip:7-zip' }
+    @{ Match = '^notepad(\+\+|plusplus)'; Cpe = 'notepad-plus-plus:notepad++' }
+    @{ Match = '^(google chrome|google\.chrome|googlechrome)$'; Cpe = 'google:chrome' }
+    @{ Match = '^mozilla[. ]firefox[. ]esr\b|^firefoxesr$'; Cpe = 'mozilla:firefox_esr' }
+    @{ Match = '^mozilla[. ]firefox\b|^firefox$'; Cpe = 'mozilla:firefox' }
+    @{ Match = '^mozilla[. ]thunderbird\b|^thunderbird$'; Cpe = 'mozilla:thunderbird' }
+    @{ Match = '^microsoft[. ]edge$'; Cpe = 'microsoft:edge_chromium' }
+    @{ Match = '^microsoft visual studio code\b|^microsoft\.visualstudiocode$|^vscode$'; Cpe = 'microsoft:visual_studio_code' }
+    @{ Match = '^microsoft 365\b|^microsoft\.office$|^office365'; Cpe = 'microsoft:365_apps' }
+    @{ Match = '^microsoft teams\b|^microsoft\.teams\b|^msteams$'; Cpe = 'microsoft:teams' }
+    @{ Match = '^microsoft[. ]onedrive$'; Cpe = 'microsoft:onedrive' }
+    @{ Match = '^microsoft asp\.net core\b|^microsoft\.dotnet\.aspnetcore\b|^dotnet-aspnet'; Cpe = 'microsoft:asp.net_core' }
+    @{ Match = '^microsoft \.net framework\b'; Cpe = 'microsoft:.net_framework' }
+    @{ Match = '^microsoft (\.net|windows desktop runtime)\b|^microsoft\.dotnet\.|^dotnet'; Cpe = 'microsoft:.net' }
+    @{ Match = '^vlc media player$|^videolan\.vlc$|^vlc$'; Cpe = 'videolan:vlc_media_player' }
+    @{ Match = '^adobe acrobat reader\b|^adobe\.acrobat\.reader\b|^adobereader$'; Cpe = 'adobe:acrobat_reader_dc' }
+    @{ Match = '^adobe acrobat\b'; Cpe = 'adobe:acrobat_dc' }
+    @{ Match = '^python \d|^python\.python\.|^python3?$'; Cpe = 'python:python' }
+    @{ Match = '^git$|^git version \d|^git\.git$'; Cpe = 'git-scm:git' }
+    @{ Match = '^libreoffice\b|^thedocumentfoundation\.libreoffice\b'; Cpe = 'libreoffice:libreoffice' }
+    @{ Match = '^winrar\b|^rarlab\.winrar$'; Cpe = 'rarlab:winrar' }
+    @{ Match = '^putty\b'; Cpe = 'putty:putty' }
+    @{ Match = '^keepass( password safe|$)|^dominikreichl\.keepass$'; Cpe = 'keepass:keepass' }
+    @{ Match = '^wireshark\b|^wiresharkfoundation\.wireshark$'; Cpe = 'wireshark:wireshark' }
+    @{ Match = '^node\.js$|^openjs\.nodejs\b|^nodejs'; Cpe = 'nodejs:node.js' }
+    @{ Match = '^itunes$|^apple\.itunes$'; Cpe = 'apple:itunes' }
+    @{ Match = '^whatsapp\b|whatsappdesktop'; Cpe = 'whatsapp:whatsapp_desktop' }
+)
 
 # ---------------------------------------------------------------
 # Helper functions
@@ -1114,6 +1191,13 @@ function Set-ChromeHardening {
     # running. Site notifications (e.g. web mail or chat) only arrive while Chrome is open.
     Set-ChromePolicy -Name 'BackgroundModeEnabled' -Value 0 -Description 'Disable background apps when Chrome is closed'
 
+    # Extra: relaunch after an update ($BrowserRelaunchNotification at the top)
+    # Without it, a downloaded update only shows as an "Update" button in
+    # Chrome's toolbar, and the old version keeps running until Chrome is
+    # closed. The period is in milliseconds.
+    Set-ChromePolicy -Name 'RelaunchNotification' -Value $BrowserRelaunchNotification -Description 'Prompt to relaunch after an update (1 = ask, 2 = ask, then relaunch)'
+    Set-ChromePolicy -Name 'RelaunchNotificationPeriod' -Value ([int]$BrowserRelaunchHours * 3600000) -Description "Relaunch within $BrowserRelaunchHours hours of an update"
+
     # 1.13 Disable saving browser history - Disabled (i.e. allow history)
     # Note: the policy "Disable saving browser history" set to Disabled means history IS saved.
     # Keeping history aids forensics.
@@ -1500,6 +1584,9 @@ function Set-EdgeHardening {
     & $set 'DefaultPopupsSetting' 2 'Block pop-ups'
     & $set 'DownloadRestrictions' 2 'Block potentially dangerous downloads'
     & $set 'AlwaysOpenPdfExternally' 0 "Open PDFs in Edge's own viewer"
+    # Relaunch after an update, as Chrome ($BrowserRelaunchNotification at the top)
+    & $set 'RelaunchNotification' $BrowserRelaunchNotification 'Prompt to relaunch after an update (1 = ask, 2 = ask, then relaunch)'
+    & $set 'RelaunchNotificationPeriod' ([int]$BrowserRelaunchHours * 3600000) "Relaunch within $BrowserRelaunchHours hours of an update"
     # The same sites as Chrome's URLBlocklist: Chrome Remote Desktop and the
     # remote access programs' sites
     Set-ChromePolicyList -Browser Edge -Name 'URLBlocklist' -Values (@('remotedesktop.google.com') + @(Get-BlockedRemoteAccessSite)) -Description 'Block Chrome Remote Desktop and remote access program sites'
@@ -4153,6 +4240,441 @@ function Update-WingetPackage {
     Test-WingetExit 'winget upgrade --all'
 }
 
+# A date from the browsers' release lists, as UTC. Windows PowerShell leaves
+# JSON dates as text; PowerShell 7 makes them dates. Edge's have no time
+# zone and are UTC.
+function ConvertTo-UtcDate($Value) {
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
+    [datetimeoffset]::Parse("$Value", [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime
+}
+
+# Whether a browser version is current, from its maker's release list:
+# Current is $true, $false, or $null when it can't tell, and Why says so.
+#   Chrome: Google offers several versions at once while an update rolls out
+#   to more and more PCs. Current while Google still offers it, or stopped
+#   less than 3 days ago (the next one may not have reached this PC yet).
+#   Edge: the list has only the newest version. Current when this is that
+#   version or newer, or the newest came out less than 3 days ago.
+function Test-BrowserCurrent {
+    param([Parameter(Mandatory)][string]$Browser, [Parameter(Mandatory)][version]$Version)
+    $cutoff = (Get-Date).ToUniversalTime().AddDays(-3)
+    $result = { param($c, $why) [pscustomobject]@{ Current = $c; Why = $why } }
+    if ($Browser -eq 'Chrome') {
+        $uri = "https://versionhistory.googleapis.com/v1/chrome/platforms/win64/channels/stable/versions/all/releases?filter=version=$Version"
+        $releases = @(@((Invoke-RestMethod -UseBasicParsing -TimeoutSec 60 -Uri $uri -ErrorAction Stop).releases) | Where-Object { $_ })
+        if ($releases.Count -eq 0) { return & $result $null "Google never offered $Version on Chrome's stable channel (a beta or extended stable Chrome?)" }
+        $ended = [datetime]::MinValue
+        foreach ($r in $releases) {
+            $fraction = if ($r.PSObject.Properties['fraction']) { [double]$r.fraction } else { 1 }
+            if (-not $r.serving.PSObject.Properties['endTime']) {
+                if ($fraction -gt 0) { return & $result $true "Google still offers $Version" }
+                continue
+            }
+            $end = ConvertTo-UtcDate $r.serving.endTime
+            if ($end -gt $ended) { $ended = $end }
+        }
+        if ($ended -gt $cutoff) { return & $result $true "Google stopped offering $Version on $($ended.ToString('yyyy-MM-dd')); its next version is still reaching PCs" }
+        return & $result $false "Google stopped offering $Version on $($ended.ToString('yyyy-MM-dd'))"
+    }
+    $latest = $null
+    # A JSON array comes back as one object, so @() would nest it
+    $products = Invoke-RestMethod -UseBasicParsing -TimeoutSec 60 -Uri 'https://edgeupdates.microsoft.com/api/products' -ErrorAction Stop
+    foreach ($product in $products) {
+        if ($product.Product -ne 'Stable') { continue }
+        foreach ($r in @($product.Releases)) {
+            if ($r.Platform -ne 'Windows' -or $r.Architecture -ne 'x64') { continue }
+            if (-not $latest -or [version]$r.ProductVersion -gt [version]$latest.ProductVersion) { $latest = $r }
+        }
+    }
+    if (-not $latest) { return & $result $null "Microsoft's list has no Edge for Windows" }
+    $newest = [version]$latest.ProductVersion
+    $published = ConvertTo-UtcDate $latest.PublishedTime
+    if ($Version -ge $newest) { return & $result $true "the newest is $newest" }
+    if ($published -gt $cutoff) { return & $result $true "Edge $newest came out on $($published.ToString('yyyy-MM-dd')) and is still reaching PCs" }
+    & $result $false "Edge $newest came out on $($published.ToString('yyyy-MM-dd'))"
+}
+
+# patchbrowsers: Chrome and Edge up to date. Each updates itself (Google
+# Updater, Microsoft Edge Update) from scheduled tasks; this turns those
+# tasks and services back on if something turned them off, starts the tasks
+# now rather than waiting for their next check, and, if the browser is out
+# of date (Test-BrowserCurrent), waits up to 10 minutes for the new version.
+# Fails if it's still out of date. An update downloaded while the browser
+# is open waits until it's closed: that's a note, and a line in the message
+# at the end, and the browser itself asks to be relaunched
+# ($BrowserRelaunchNotification at the top).
+function Update-Browser {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $ProgressPreference = 'SilentlyContinue'
+    $browsers = @()
+    foreach ($b in @(
+            @{ Name = 'Chrome'; Exe = 'chrome.exe'; Process = 'chrome'; About = 'Help > About Google Chrome'
+                Tasks = @('GoogleUpdate*'); Services = @('gupdate', 'gupdatem', 'GoogleUpdater*')
+                Dirs = @("$env:ProgramFiles\Google\Chrome\Application", "${env:ProgramFiles(x86)}\Google\Chrome\Application",
+                    "$env:LOCALAPPDATA\Google\Chrome\Application") }
+            @{ Name = 'Edge'; Exe = 'msedge.exe'; Process = 'msedge'; About = 'Settings > About Microsoft Edge'
+                Tasks = @('MicrosoftEdgeUpdate*'); Services = @('edgeupdate', 'edgeupdatem')
+                Dirs = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application", "$env:ProgramFiles\Microsoft\Edge\Application") })) {
+        $b.Dir = $b.Dirs | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ $b.Exe)) } | Select-Object -First 1
+        if ($b.Dir) { $browsers += $b } else { Write-Host "  [$($b.Name)] Not installed" -ForegroundColor DarkGray }
+    }
+
+    # The running version is the .exe's. One downloaded while the browser
+    # was open waits in a folder named for its version (with new_chrome.exe
+    # or new_msedge.exe) until the browser is closed.
+    $running = { param($b) [version](Get-Item -LiteralPath (Join-Path $b.Dir $b.Exe)).VersionInfo.ProductVersion }
+    $installed = {
+        param($b)
+        $v = @(Get-ChildItem -LiteralPath $b.Dir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+(\.\d+){3}$' } | ForEach-Object { [version]$_.Name } | Sort-Object -Descending)
+        $r = & $running $b
+        if ($v.Count -and $v[0] -gt $r) { $v[0] } else { $r }
+    }
+    $check = {
+        param($b, $v)
+        try {
+            Test-BrowserCurrent -Browser $b.Name -Version $v
+        } catch {
+            [pscustomobject]@{ Current = $null; Why = "couldn't get the latest version: $($_.Exception.Message)" }
+        }
+    }
+
+    foreach ($b in $browsers) {
+        # Updates stop for good when the updater's services or tasks are off
+        # (some "speed up your PC" tools and malware do that)
+        foreach ($svc in @(Get-Service -Name $b.Services -ErrorAction SilentlyContinue)) {
+            if ("$($svc.StartType)" -ne 'Disabled') { continue }
+            try {
+                Set-TrackedValue -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)" -Name 'Start' -Value 3
+                Write-Fail "[$($b.Name)] Its update service $($svc.Name) was disabled; set back to Manual"
+            } catch {
+                Write-Fail "[$($b.Name)] Its update service $($svc.Name) is disabled and couldn't be turned back on: $($_.Exception.Message)"
+            }
+        }
+        $tasks = @(Get-ScheduledTask -TaskName $b.Tasks -ErrorAction SilentlyContinue)
+        if ($tasks.Count -eq 0) {
+            Write-Fail "[$($b.Name)] Its updater has no scheduled tasks, so it doesn't update by itself. Reinstall $($b.Name) to put them back"
+        }
+        foreach ($t in $tasks) {
+            if ("$($t.State)" -eq 'Disabled') {
+                try {
+                    Enable-ScheduledTask -InputObject $t -ErrorAction Stop | Out-Null
+                    Write-Fail "[$($b.Name)] Its update task $($t.TaskName) was turned off; turned back on"
+                } catch {
+                    Write-Fail "[$($b.Name)] Its update task $($t.TaskName) is turned off and couldn't be turned back on: $($_.Exception.Message)"
+                    continue
+                }
+            }
+            try { Start-ScheduledTask -InputObject $t -ErrorAction Stop } catch { Write-Verbose "couldn't start $($t.TaskName)" }
+        }
+        $b.Before = & $installed $b
+        $b.Check = & $check $b $b.Before
+        Write-Host "  [$($b.Name)] $($b.Before): $($b.Check.Why). Its updater has been started" -ForegroundColor DarkGray
+    }
+
+    # Wait for the out-of-date ones (a download of about 100-200 MB)
+    $waiting = @($browsers | Where-Object { $_.Check.Current -eq $false })
+    $deadline = (Get-Date).AddMinutes(10)
+    while ($waiting.Count -gt 0 -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 15
+        foreach ($b in $waiting) {
+            $now = & $installed $b
+            if ($now -gt $b.Before) {
+                $b.Before = $now
+                $b.Check = & $check $b $now
+            }
+        }
+        $waiting = @($waiting | Where-Object { $_.Check.Current -eq $false })
+    }
+
+    foreach ($b in $browsers) {
+        $now = & $installed $b
+        $run = & $running $b
+        switch ($b.Check.Current) {
+            $false { Write-Fail "[$($b.Name)] Out of date: version $now. $($b.Check.Why), and its updater didn't install a newer one in 10 minutes. Open $($b.Name) > $($b.About) to update it" }
+            $true { Write-Host "  [$($b.Name)] Up to date: $now ($($b.Check.Why))" -ForegroundColor Green }
+            default { Write-Host "  [$($b.Name)] Version $now; can't tell if it's the latest: $($b.Check.Why)" -ForegroundColor Yellow }
+        }
+        if ($now -gt $run) {
+            $open = @(Get-Process -Name $b.Process -ErrorAction SilentlyContinue |
+                    Where-Object { "$($_.Path)" -like "$($b.Dir)\*" })
+            if ($open.Count -gt 0) {
+                $script:Notes.Add("[$($b.Name)] Updated to $now, but $run is still running: close every $($b.Name) window and open it again")
+                $script:BrowserRelaunch.Add($b.Name)
+            } else {
+                Write-Host "  [$($b.Name)] $now takes over the next time it's opened" -ForegroundColor Green
+            }
+        }
+    }
+}
+
+# softwarelist: every installed program as a CPE
+# (cpe:2.3:part:vendor:product:version), for OpenCVE, in
+# installed-software-<PC name>.csv in the log folder, replaced each run.
+# After the updates, so the versions are current. OpenCVE alerts on
+# vendor/product subscriptions: the Vendor and Product columns. Each
+# program's comes from $SoftwareCpeMap (Match = known, as does Windows'),
+# or is guessed from its winget or Chocolatey ID, or its publisher and
+# name (Match = guess). A guess can be a vendor or product NVD doesn't use;
+# add the right one to $SoftwareCpeMap. Sources: Windows itself, Programs
+# and Features (the PC's and each user's), Store apps (Microsoft's own only
+# when listed), winget export and choco list. One row per CPE; FoundAs
+# says where it was found.
+function Save-SoftwareList {
+    $rows = @{}
+    # Plain names for installed-programs-<PC name>.txt, by where they're listed
+    $names = [ordered]@{}
+    foreach ($s in 'Windows Settings > Apps > Installed apps', 'Microsoft Store', 'winget', 'Chocolatey') {
+        $names[$s] = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    }
+    $settingsApps = $names['Windows Settings > Apps > Installed apps']
+    function Get-Prop($o, [string]$n) { if ($o -and $o.PSObject.Properties[$n]) { "$($o.$n)".Trim() } else { '' } }
+
+    # Lower case, spaces as _, no (c) (R) TM signs
+    function ConvertTo-CpeWord([string]$s) {
+        $s = $s.ToLowerInvariant() -replace '[\u00a9\u00ae\u2122]', ''
+        ($s.Trim() -replace '\s+', '_' -replace '_+', '_').Trim('_')
+    }
+
+    # A CPE 2.3 value: characters other than letters, digits, _ . - get a
+    # backslash (notepad++ is notepad\+\+); empty is *
+    function ConvertTo-CpeValue([string]$s) {
+        if (-not $s) { return '*' }
+        $s -replace '([^A-Za-z0-9_.\-])', '\$1'
+    }
+
+    function Find-MappedCpe([string[]]$names) {
+        foreach ($m in $SoftwareCpeMap) {
+            foreach ($n in $names) { if ($n -and $n -match $m.Match) { return $m.Cpe } }
+        }
+        $null
+    }
+
+    # "Microsoft Corporation" -> Microsoft, "The Git Development Community" -> Git
+    function Get-VendorGuess([string]$publisher) {
+        $w = @(($publisher -replace '[,.]', ' ' -replace '^\s*the\s+', '') -split '\s+' | Where-Object { $_ })
+        if ($w.Count) { $w[0] } else { '' }
+    }
+
+    # "Mozilla Firefox (x64 en-US)" from Mozilla -> Firefox; "Python 3.12.1
+    # (64-bit)" from Python -> Python
+    function Get-ProductGuess([string]$name, [string]$vendor) {
+        $p = $name -replace '\([^)]*\)', ' ' -replace '\s+-\s+.*$', ''
+        $p = ($p -replace '\bv?\d+(\.\d+)+\b', ' ' -replace '\b(x64|x86|amd64|arm64|64-bit|32-bit)\b', ' ').Trim()
+        if ($vendor -and $p -match "^$([regex]::Escape($vendor))(\s+|$)(.*)$") { $p = $Matches[2] }
+        if ($p.Trim()) { $p } else { $vendor }
+    }
+
+    # winget and Store IDs: Publisher.Package, a version part dropped
+    # (Python.Python.3.12 -> python:python)
+    function Get-IdGuess([string]$id) {
+        $parts = @($id -split '\.' | Where-Object { $_ })
+        $product = @($parts | Select-Object -Skip 1 | Where-Object { $_ -notmatch '^\d+$' }) -join '_'
+        if (-not $product) { $product = $parts[0] }
+        $parts[0], $product
+    }
+
+    function Add-Software {
+        param([string]$Name, [string]$Version, [string]$Vendor, [string]$Product, [string]$From,
+            [string]$Part = 'a', [string]$Match = 'guess')
+        $mapped = Find-MappedCpe @($Name)
+        if ($mapped) {
+            $Vendor, $Product = $mapped -split ':', 2
+            $Match = 'known'
+        }
+        $Vendor = ConvertTo-CpeWord $Vendor
+        $Product = ConvertTo-CpeWord $Product
+        if (-not $Vendor -or -not $Product) { return }
+        $Version = ConvertTo-CpeWord $Version
+        $cpe = 'cpe:2.3:{0}:{1}:{2}:{3}:*:*:*:*:*:*:*' -f $Part, (ConvertTo-CpeValue $Vendor),
+            (ConvertTo-CpeValue $Product), (ConvertTo-CpeValue $Version)
+        if (-not $rows.ContainsKey($cpe)) {
+            $rows[$cpe] = [pscustomobject]@{
+                CPE = $cpe; Vendor = $Vendor; Product = $Product; Version = $Version; Match = $Match
+                FoundAs = [System.Collections.Generic.List[string]]::new()
+            }
+        }
+        $entry = "${From}: $Name"
+        if (-not $rows[$cpe].FoundAs.Contains($entry)) { $rows[$cpe].FoundAs.Add($entry) }
+    }
+
+    # Windows itself, as NVD names it: windows_11_24h2 10.0.26100.<UBR>
+    $nt = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    $build = Get-Prop $nt 'CurrentBuildNumber'
+    $release = Get-Prop $nt 'DisplayVersion'
+    $winName = if ([int]$build -ge 22000) { 'windows_11' } else { 'windows_10' }
+    Add-Software -Name "Windows $($winName -replace '\D', '') $release" -Version "10.0.$build.$(Get-Prop $nt 'UBR')" `
+        -Vendor 'microsoft' -Product "${winName}_$release" -From 'Windows' -Part 'o' -Match 'known'
+
+    # Programs and Features, without Windows updates and the hidden parts of
+    # a program (each is listed under the program itself)
+    $addUninstall = {
+        param($root)
+        foreach ($k in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            $v = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+            $name = Get-Prop $v 'DisplayName'
+            if (-not $name -or (Get-Prop $v 'SystemComponent') -eq '1' -or (Get-Prop $v 'ParentKeyName') -or
+                (Get-Prop $v 'ReleaseType') -match 'update|hotfix') { continue }
+            [void]$settingsApps.Add($name)
+            $publisher = Get-Prop $v 'Publisher'
+            $vendor = Get-VendorGuess $(if ($publisher) { $publisher } else { $name })
+            Add-Software -Name $name -Version (Get-Prop $v 'DisplayVersion') -Vendor $vendor `
+                -Product (Get-ProductGuess $name $vendor) -From 'Programs'
+        }
+    }
+    & $addUninstall 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+    & $addUninstall 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    Invoke-InEachUserHive {
+        param($root, $label)
+        & $addUninstall "$root\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    }
+
+    # Store apps, for every user. Microsoft's own (Photos, Calculator...) only
+    # when $SoftwareCpeMap lists them.
+    $packages = @()
+    try {
+        $packages = @(Get-AppxPackage -AllUsers -ErrorAction Stop |
+            Where-Object { "$($_.SignatureKind)" -eq 'Store' -and -not $_.IsFramework -and -not $_.IsResourcePackage })
+    } catch {
+        Write-Host "  [Software] Couldn't list Store apps: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    # The names Start and Settings show, which many manifests only point to
+    # (ms-resource:), by package family
+    $startNames = @{}
+    try {
+        foreach ($a in @(Get-StartApps -ErrorAction Stop)) {
+            if ("$($a.AppID)" -match '^([^!\\]+_[a-z0-9]{13})!' -and -not $startNames.ContainsKey($Matches[1])) { $startNames[$Matches[1]] = "$($a.Name)" }
+        }
+    } catch {
+        Write-Verbose "no Start menu names: $($_.Exception.Message)"
+    }
+    foreach ($pkg in $packages) {
+        $display = ''
+        $publisher = ''
+        try {
+            $props = ([xml](Get-Content -LiteralPath (Join-Path $pkg.InstallLocation 'AppxManifest.xml') -Raw -ErrorAction Stop)).Package.Properties
+            # ms-resource: names are only in the app's resources
+            if ("$($props.DisplayName)" -notmatch '^ms-resource:') { $display = "$($props.DisplayName)".Trim() }
+            if ("$($props.PublisherDisplayName)" -notmatch '^ms-resource:') { $publisher = "$($props.PublisherDisplayName)".Trim() }
+        } catch {
+            Write-Verbose "no manifest for $($pkg.Name)"
+        }
+        $shown = if ($startNames.ContainsKey("$($pkg.PackageFamilyName)")) { $startNames["$($pkg.PackageFamilyName)"] } elseif ($display) { $display } else { $pkg.Name }
+        [void]$names['Microsoft Store'].Add($shown)
+        [void]$settingsApps.Add($shown)
+        $mapped = Find-MappedCpe @($display, $pkg.Name)
+        if ("$($pkg.Publisher)" -match '^CN=Microsoft Corporation,' -and -not $mapped) { continue }
+        $name = if ($mapped -and -not (Find-MappedCpe @($display))) { $pkg.Name } elseif ($display) { $display } else { $pkg.Name }
+        if ($display -and $publisher) {
+            $vendor = Get-VendorGuess $publisher
+            $product = Get-ProductGuess $display $vendor
+        } else {
+            $vendor, $product = Get-IdGuess $pkg.Name
+            # Store publisher IDs (5319275A.WhatsAppDesktop) aren't names
+            if ($vendor -match '^[0-9A-F]{8}$') { $vendor = $product }
+        }
+        Add-Software -Name $name -Version "$($pkg.Version)" -Vendor $vendor -Product $product -From 'Store'
+    }
+
+    # winget: every package it matches to its catalog, whoever installed it.
+    # Its Store matches are listed above, under their names.
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        $export = Join-Path $LogDir "winget-export-$runStamp.json"
+        Invoke-Native winget 'export', '-o', $export, '--include-versions', '--accept-source-agreements',
+            '--disable-interactivity' -Skip "$WingetProgress|not available from any source"
+        if (Test-Path -LiteralPath $export) {
+            try {
+                $json = Get-Content -LiteralPath $export -Raw | ConvertFrom-Json
+                foreach ($src in @($json.Sources)) {
+                    if ("$($src.SourceDetails.Name)" -eq 'msstore') { continue }
+                    foreach ($p in @($src.Packages)) {
+                        $id = "$($p.PackageIdentifier)"
+                        if (-not $id) { continue }
+                        $vendor, $product = Get-IdGuess $id
+                        Add-Software -Name $id -Version "$($p.Version)" -Vendor $vendor -Product $product -From 'winget'
+                    }
+                }
+            } catch {
+                Write-Host "  [Software] Couldn't read winget's list: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+            Remove-Item -LiteralPath $export -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-Host "  [Software] winget export made no list (exit $LASTEXITCODE)" -ForegroundColor Yellow
+        }
+
+        # winget list's Name column, which starts each line and ends where the
+        # Id column starts (the headers are in Windows' language). Long names
+        # are cut short, ending in an ellipsis.
+        $out = @(& winget list --accept-source-agreements --disable-interactivity 2>&1 |
+                ForEach-Object { ("$_" -split "`r")[-1] })
+        $dash = -1
+        for ($i = 1; $i -lt $out.Count; $i++) { if ($out[$i] -match '^-{10,}\s*$') { $dash = $i; break } }
+        if ($dash -gt 0 -and $out[$dash - 1] -match '^(\S+\s+)\S') {
+            $idStart = $Matches[1].Length
+            for ($i = $dash + 1; $i -lt $out.Count; $i++) {
+                if (-not $out[$i].Trim()) { break }
+                if ($out[$i].Length -le $idStart) { continue }
+                $n = $out[$i].Substring(0, $idStart).Trim()
+                if ($n) { [void]$names['winget'].Add($n) }
+            }
+        } else {
+            Write-Host "  [Software] Couldn't read winget list (exit $LASTEXITCODE)" -ForegroundColor Yellow
+        }
+    }
+
+    # Chocolatey: id|version lines. Version 2 lists only what's installed;
+    # version 1 needs --local-only. A .install or .portable package is the
+    # program itself.
+    if (Get-Command choco -ErrorAction SilentlyContinue) {
+        $chocoVersion = "$(& choco --version | Select-Object -First 1)"
+        $chocoArgs = if ($chocoVersion -match '^\s*1\.') { @('list', '--local-only', '-r') } else { @('list', '-r') }
+        foreach ($line in @(& choco @chocoArgs)) {
+            $id, $ver = "$line" -split '\|', 2
+            if (-not $ver) { continue }
+            [void]$names['Chocolatey'].Add($id)
+            if ($id -match '^kb\d+') { continue }
+            $id = $id -replace '\.(install|portable|commandline)$', ''
+            Add-Software -Name $id -Version $ver -Vendor $id -Product $id -From 'choco'
+        }
+    }
+
+    $list = @($rows.Values | Sort-Object Vendor, Product, Version | ForEach-Object {
+            [pscustomobject]@{
+                CPE = $_.CPE; Vendor = $_.Vendor; Product = $_.Product; Version = $_.Version
+                Match = $_.Match; FoundAs = ($_.FoundAs -join '; ')
+            }
+        })
+    $path = Join-Path $LogDir "installed-software-$env:COMPUTERNAME.csv"
+    try {
+        $list | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        Write-Fail "[Software] Couldn't write ${path}: $($_.Exception.Message)"
+        return
+    }
+    $script:SoftwareList = $path
+    $known = @($list | Where-Object { $_.Match -eq 'known' }).Count
+    Write-Host "  [Software] $($list.Count) CPEs: $known known (Windows and `$SoftwareCpeMap), $($list.Count - $known) guessed" -ForegroundColor Green
+    Write-Host "  [Software] For OpenCVE: $path" -ForegroundColor Green
+
+    $text = [System.Collections.Generic.List[string]]::new()
+    $text.Add("Installed programs on $env:COMPUTERNAME, $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
+    foreach ($s in $names.Keys) {
+        $text.Add('')
+        $text.Add("$s ($($names[$s].Count))")
+        foreach ($n in @($names[$s] | Sort-Object)) { $text.Add("    $n") }
+    }
+    $namesPath = Join-Path $LogDir "installed-programs-$env:COMPUTERNAME.txt"
+    try {
+        Set-Content -LiteralPath $namesPath -Value $text -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        Write-Fail "[Software] Couldn't write ${namesPath}: $($_.Exception.Message)"
+        return
+    }
+    $script:ProgramList = $namesPath
+    Write-Host "  [Software] Names: $namesPath ($(@($names.Keys | ForEach-Object { "$($names[$_].Count) $_" }) -join ', '))" -ForegroundColor Green
+}
+
 # msert: Microsoft Safety Scanner, a second opinion that doesn't depend on Defender's
 # installation. It uses the same engine and signatures, packaged separately, so it
 # still works if malware has disabled or damaged Defender. It expires 10 days after
@@ -5965,6 +6487,8 @@ function Save-RunStatus {
     }
     $lines.Add('')
     $lines.Add("Log: $transcript")
+    if ($script:SoftwareList) { $lines.Add("Installed software (for OpenCVE): $script:SoftwareList") }
+    if ($script:ProgramList) { $lines.Add("Installed programs (names): $script:ProgramList") }
     if ($script:HistoryFile -and (Test-Path -LiteralPath $script:HistoryFile)) {
         $lines.Add('')
         $lines.Add('=' * 72)
@@ -6245,6 +6769,8 @@ try {
     Invoke-Step 'patchchoco' { Update-ChocolateyPackage }
     Invoke-Step 'patchmsstore' { Update-StoreApp }
     Invoke-Step 'patchwinget' { Update-WingetPackage }
+    Invoke-Step 'patchbrowsers' { Update-Browser }
+    Invoke-Step 'softwarelist' { Save-SoftwareList }
     Invoke-Step 'msert' { Start-SafetyScan }
     Invoke-Step 'eekscan' { Start-EmsisoftScan }
     Invoke-Step 'remoteaccess' { Test-RemoteAccess }
@@ -6344,6 +6870,10 @@ if ($script:Failures.Count -gt 0) {
 } else {
     $popup.Add('Your PC has been checked and updated. No problems were found.')
 }
+if ($script:BrowserRelaunch.Count -gt 0) {
+    $popup.Add('')
+    $popup.Add("$($script:BrowserRelaunch -join ' and ') has been updated. To finish, close all of its windows and open it again; your tabs come back.")
+}
 $restart = $script:RestartReasons.Count -gt 0
 if ($restart) {
     $popup.Add('')
@@ -6383,7 +6913,7 @@ if (-not $shown) {
 }
 if ("$answer" -eq 'Yes') {
     # 30 seconds' warning; Windows closes programs that are still open
-    & shutdown.exe /r /t 30 /c 'Restarting to finish the PC check'
+    & shutdown.exe /r /t 30 /c 'Restarting in 30 seconds to finish the PC check'
 }
 
 if ($script:Failures.Count -gt 0) { exit 1 }
