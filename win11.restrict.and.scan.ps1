@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    VERSION 2026-11-08
+    VERSION 2026-11-14
 
     Keeps a Windows 11 PC used by non-technical person who is a target of scams
     and malware. Task Scheduler runs it every day at 20:00 (full virus scans
@@ -161,10 +161,10 @@
                           a full scan, on Fridays and with -FullScan only (each
                           run downloads a few hundred MB)
        eekscan:           if C:\EEK exists, Emsisoft Emergency Kit, updated,
-                          detect only, the same scan every day: running
-                          programs and spyware traces, including
-                          potentially unwanted programs. No folders of
-                          files (that would be /quick or /f=)
+                          detect only, including potentially unwanted
+                          programs: running programs and spyware traces
+                          every day, plus every file on C: on Fridays and
+                          with -FullScan (can take hours)
     6. Checks. Remote access, UAC, and encryption are repaired. Disk and
        Windows-health results are reported.
        - remoteaccess:    Remote Desktop, Remote Assistance, and WinRM turned
@@ -4759,18 +4759,18 @@ function Start-SafetyScan {
 # engine from Defender's (Bitdefender's plus Emsisoft's own), so unlike the Safety
 # Scanner it's an independent second opinion. Runs only if C:\EEK exists (the kit
 # is portable: extract it there). Updates its signatures, then scans detect only
-# (no /quarantine or /delete), the same scan every day (Fridays and
-# -FullScan don't change it). From a2cmd /? (version 2025.7): /memory scans
-# running programs for malware, /traces the registry and disk for spyware
-# traces, and /malware does both; /pup also reports potentially unwanted
-# programs, which is what many scam installs are; /archive and /ntfs make
-# a file scan look inside archives and NTFS alternate data streams;
+# (no /quarantine or /delete). Every day: /memory /traces /malware. On
+# Fridays and with -FullScan, a second run scans every file on the system
+# drive, /f=C:\ (can take hours). The two are separate runs because a2cmd
+# ignores /f= when /malware is given too. From a2cmd /? (version 2025.7):
+# /memory scans running programs for malware, /traces the registry and disk
+# for spyware traces, and /malware does both; /pup also reports potentially
+# unwanted programs, which is what many scam installs are; /archive and /ntfs
+# make a file scan look inside archives and NTFS alternate data streams;
 # /rebootallowed lets it restart Windows "if this is required to remove
-# found threats", which can't happen here, as nothing is removed. None of
-# these scans folders of files: that's /quick (important folders) or
-# /f=<path>. a2cmd has no /full: given a switch it doesn't know it scans
-# nothing ("Incorrect parameters - no objects to scan"), which is a
-# failure here.
+# found threats", which can't happen here, as nothing is removed. a2cmd has
+# no /full: given a switch it doesn't know it scans nothing ("Incorrect
+# parameters - no objects to scan"), which is a failure here.
 # Output goes to eek-scan-<date>.log in $LogDir, which opens in Notepad at
 # the end of the run if anything is found.
 # This runs as administrator, but a folder made at the root of C: can be changed
@@ -4829,8 +4829,15 @@ function Start-EmsisoftScan {
         return
     }
 
-    # One argument list per a2cmd run
-    $runs = @(, @('/memory', '/traces', '/pup', '/malware', '/archive', '/ntfs', '/rebootallowed'))
+    # One argument list per a2cmd run. /f= gets a run of its own, without
+    # /malware: a2cmd ignores /f= when /malware is given too.
+    $settings = @('/pup', '/archive', '/ntfs', '/rebootallowed')
+    $runs = @(, (@('/memory', '/traces', '/malware') + $settings))
+    if (Test-FullScanDay) {
+        $why = if ($FullScan) { '-FullScan' } else { 'Friday' }
+        Write-Host "Emsisoft: every file on $env:SystemDrive\ too ($why); this can take hours" -ForegroundColor Cyan
+        $runs += , (@("/f=$env:SystemDrive\") + $settings)
+    }
     $log = Join-Path $LogDir "eek-scan-$runStamp.log"
     $out = @()
     $rc = 0
