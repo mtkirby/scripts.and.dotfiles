@@ -2,8 +2,10 @@
 rem Sets up browser.update.ps1 on this PC:
 rem   - a copy in C:\Program Files\browser.update (only administrators can change it)
 rem   - a task that runs it every hour as SYSTEM: Chrome and Edge are asked for
-rem     updates and install them, and anyone with one open is told it restarts
-rem     in 15 minutes (with a "Restart now" button); their tabs come back
+rem     updates and install them, Firefox is set (by policy) to check for its
+rem     own every hour, and anyone with one of them open when an update is
+rem     waiting is told it restarts in 15 minutes ("Restart now" and "Remind
+rem     me later" buttons); their tabs come back
 rem
 rem Keep this file in the same folder as browser.update.ps1, then right-click it >
 rem Run as administrator (double-click opens it in Notepad once

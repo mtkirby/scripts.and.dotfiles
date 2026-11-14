@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-    Keeps Google Chrome and Microsoft Edge up to date every hour, and makes
-    an open browser restart within 15 minutes of an update.
+    VERSION 2026-11-14
+    Keeps Google Chrome, Microsoft Edge and Mozilla Firefox up to date every
+    hour, and makes an open browser restart within 15 minutes of an update.
 
 .DESCRIPTION
     Chrome and Edge check for updates by themselves only every 4.5 hours or
@@ -13,8 +14,16 @@
 
     This asks each browser's updater for an update right away, the same way
     the browser's own "About" page does (the updater's on-demand COM
-    interface, which any program can use on any PC), every hour. If an update
-    is installed while the browser is open, the person using it gets a window
+    interface, which any program can use on any PC), every hour.
+
+    Firefox has no such interface: it updates itself from inside the running
+    browser (every 6 hours) or, while it's closed, from a task of its own
+    (every 7). It does obey its policies on any PC, so this sets its
+    app.update.interval to an hour by policy (and keeps it set), and checks
+    every hour for an update it has downloaded and is waiting to apply.
+    Firefox then shows "Your browser is being managed by your organization".
+
+    If an update is installed while the browser is open, the person using it gets a window
     with a countdown: the browser closes and opens again by itself after
     15 minutes ($RelaunchMinutes), or at once with "Restart now". Its tabs and
     windows come back. "Remind me later" puts it off until the next hourly
@@ -33,12 +42,17 @@
     restarts).
 
 .NOTES
-    - Chrome or Edge installed for one user only (in AppData) is skipped: it
+    - A browser installed for one user only (in AppData) is skipped: it
       can't be updated from SYSTEM, and it updates itself.
     - The restart closes the browser the way signing out of Windows does, so
       it saves every window and tab, then opens it with
-      --restore-last-session. If the browser doesn't close within 30 seconds
-      it's ended by force: then it opens with a "Restore" button instead.
+      --restore-last-session (Chrome, Edge) or -os-restarted (Firefox: what
+      Windows itself uses to reopen it with its tabs after a restart). If the
+      browser doesn't close within 30 seconds it's ended by force: then it
+      offers to restore the tabs when it opens instead.
+    - An update Firefox can only install with an administrator's permission
+      (pending-elevate) gets no countdown: restarting would just ask for it.
+      Firefox's own "Restart to update" handles that one.
     - Anything typed into a web page and not yet sent is lost in a restart;
       the countdown says so.
     - Not tested on Windows yet: the COM calls follow Chromium's own on-demand
@@ -66,28 +80,47 @@ $ErrorActionPreference = 'Stop'
 $RelaunchMinutes = 15
 # Longest an update check plus download and install may take, per browser
 $UpdateTimeoutMinutes = 20
+# How often Firefox checks for updates itself, in seconds (its
+# app.update.interval, set by policy; Firefox's own default is 21600, 6 hours)
+$FirefoxUpdateCheckSeconds = 3600
 
 $InstallDir = Join-Path $env:ProgramFiles 'browser.update'
 $LogDir = Join-Path $env:ProgramData 'browser.update'
 $TaskFolder = '\browser.update\'
 $CheckTaskName = 'Hourly check'
 
-# Each browser: where it's installed for the whole PC, and its updater's
-# on-demand COM class (ProgID) and app ID. Chrome's ProgID is from Chromium's
+# Each browser: where it's installed for the whole PC; what its tab and
+# helper processes have on their command line (ChildArg), so the browser
+# process itself can be told apart; what reopens it with its tabs
+# (RestoreArg); and for Chrome and Edge, their updater's on-demand COM class
+# (ProgID) and app ID. Chrome's ProgID is from Chromium's
 # chrome/updater/win/win_constants.h; Edge's follows the same pattern for its
 # updater. The app IDs are the ones each vendor's update policies use.
 $Browsers = @(
     @{
-        Name = 'Chrome'; Long = 'Google Chrome'; Exe = 'chrome.exe'; Process = 'chrome'
+        Name = 'Chrome'; Long = 'Google Chrome'; Exe = 'chrome.exe'; Process = 'chrome'; Kind = 'Chromium'
+        ChildArg = '--type='; RestoreArg = '--restore-last-session'
         ProgId = 'GoogleUpdate.Update3WebMachine'; AppId = '{8A69D345-D564-463C-AFF1-A69D9E530F96}'
         Dirs = @("$env:ProgramFiles\Google\Chrome\Application", "${env:ProgramFiles(x86)}\Google\Chrome\Application")
     }
     @{
-        Name = 'Edge'; Long = 'Microsoft Edge'; Exe = 'msedge.exe'; Process = 'msedge'
+        Name = 'Edge'; Long = 'Microsoft Edge'; Exe = 'msedge.exe'; Process = 'msedge'; Kind = 'Chromium'
+        ChildArg = '--type='; RestoreArg = '--restore-last-session'
         ProgId = 'MicrosoftEdgeUpdate.Update3WebMachine'; AppId = '{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}'
         Dirs = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application", "$env:ProgramFiles\Microsoft\Edge\Application")
     }
+    @{
+        Name = 'Firefox'; Long = 'Mozilla Firefox'; Exe = 'firefox.exe'; Process = 'firefox'; Kind = 'Firefox'
+        ChildArg = '-contentproc'; RestoreArg = '-os-restarted'
+        Dirs = @("$env:ProgramFiles\Mozilla Firefox", "${env:ProgramFiles(x86)}\Mozilla Firefox")
+    }
 )
+
+# Firefox's policies, which it reads on any PC (no domain needed)
+$FirefoxPolicyKey = 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox'
+# Where Firefox keeps a downloaded update: <this>\<hash of the install
+# folder>\updates\0\update.status (toolkit/mozapps/update/common/commonupdatedir.cpp)
+$FirefoxUpdateRoot = Join-Path $env:ProgramData 'Mozilla-1de4eec8-1241-4177-a864-e594e8d1fb38\updates'
 
 # The updater's states (CurrentState in Chromium's updater_legacy_idl.template)
 $StateUpdateAvailable = 4
@@ -120,13 +153,58 @@ function Get-BrowserDir {
     $Browser.Dirs | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ $Browser.Exe)) } | Select-Object -First 1
 }
 
-# The version the browser runs when opened (its .exe's), and the newest one
-# installed. One installed while the browser was open waits in a folder named
-# for its version, with new_chrome.exe or new_msedge.exe, until the browser
-# is closed and opened again.
+# "133.0.3", "128.5.1esr" or "131.0.6778.86" as a [version]
+function ConvertTo-Version {
+    param([string]$Text)
+    if ("$Text" -notmatch '^\d+(\.\d+){0,3}') { return [version]'0.0' }
+    $v = $Matches[0]
+    if ($v -notmatch '\.') { $v += '.0' }
+    [version]$v
+}
+
+# Firefox's downloaded update, if it's waiting for Firefox to restart: the
+# state in update.status (pending, pending-service, applied,
+# applied-service; pending-elevate needs an administrator's permission), or
+# $null. The folder is named for a hash of the install folder, which the
+# installer keeps in TaskBarIDs; without it, every Firefox's is looked at.
+function Get-FirefoxPendingState {
+    param([Parameter(Mandatory)][string]$Dir)
+    $hash = $null
+    foreach ($hive in 'HKLM:', 'HKCU:') {
+        $ids = Get-ItemProperty -Path "$hive\SOFTWARE\Mozilla\Firefox\TaskBarIDs" -ErrorAction SilentlyContinue
+        if ($ids -and $ids.PSObject.Properties[$Dir]) { $hash = "$($ids.PSObject.Properties[$Dir].Value)"; break }
+    }
+    $dirs = if ($hash) { @(Join-Path $FirefoxUpdateRoot $hash) } else {
+        @(Get-ChildItem -LiteralPath $FirefoxUpdateRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    }
+    foreach ($d in $dirs) {
+        $status = Join-Path $d 'updates\0\update.status'
+        if (-not (Test-Path -LiteralPath $status)) { continue }
+        $state = "$(Get-Content -LiteralPath $status -TotalCount 1 -ErrorAction SilentlyContinue)".Trim()
+        if ($state -match '^(pending|applied)') { return $state }
+    }
+    $null
+}
+
+# The version the browser runs when opened (its .exe's), the newest one
+# installed, and whether one is waiting for the browser to restart. For
+# Chrome and Edge, one installed while the browser was open waits in a
+# folder named for its version, with new_chrome.exe or new_msedge.exe, until
+# the browser is closed and opened again. Firefox's waits in its update
+# folder (Get-FirefoxPendingState), its version not known until it's applied.
 function Get-BrowserVersion {
     param([Parameter(Mandatory)][hashtable]$Browser, [Parameter(Mandatory)][string]$Dir)
-    $exe = [version](Get-Item -LiteralPath (Join-Path $Dir $Browser.Exe)).VersionInfo.ProductVersion
+    $exe = ConvertTo-Version (Get-Item -LiteralPath (Join-Path $Dir $Browser.Exe)).VersionInfo.ProductVersion
+    if ($Browser.Kind -eq 'Firefox') {
+        $state = Get-FirefoxPendingState $Dir
+        return [pscustomobject]@{
+            Exe = $exe
+            Installed = $exe
+            # pending-elevate: restarting would only ask for an administrator
+            Pending = [bool]($state -and $state -ne 'pending-elevate')
+            State = $state
+        }
+    }
     $newest = @(Get-ChildItem -LiteralPath $Dir -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^\d+(\.\d+){3}$' } | ForEach-Object { [version]$_.Name } |
             Sort-Object -Descending | Select-Object -First 1)
@@ -135,6 +213,7 @@ function Get-BrowserVersion {
         Exe = $exe
         Installed = $installed
         Pending = ($installed -gt $exe) -or (Test-Path -LiteralPath (Join-Path $Dir "new_$($Browser.Exe)"))
+        State = $null
     }
 }
 
@@ -200,6 +279,81 @@ function Invoke-BrowserUpdate {
     }
 }
 
+# Firefox's Preferences policy: JSON in a REG_MULTI_SZ (or REG_SZ) value,
+# {"pref": {"Value": ..., "Status": "locked"}}. Merged, so any other
+# preferences already in it stay. Locked: about:config can't change it back.
+function Set-FirefoxUpdatePolicy {
+    param([switch]$Remove)
+    if (Test-Path -LiteralPath "$FirefoxPolicyKey\Preferences") {
+        return "its Preferences policy is set as registry keys by something else, so app.update.interval was left alone"
+    }
+    $prefs = [ordered]@{}
+    $item = Get-ItemProperty -LiteralPath $FirefoxPolicyKey -ErrorAction SilentlyContinue
+    $existing = if ($item -and $item.PSObject.Properties['Preferences']) { $item.Preferences } else { $null }
+    if ($existing) {
+        try {
+            $parsed = (@($existing) -join "`n") | ConvertFrom-Json
+        } catch {
+            return "its Preferences policy isn't valid JSON, so it was left alone: $($_.Exception.Message)"
+        }
+        foreach ($p in $parsed.PSObject.Properties) { $prefs[$p.Name] = $p.Value }
+    }
+    $current = $prefs['app.update.interval']
+    if ($Remove) {
+        if (-not $current) { return $null }
+        $prefs.Remove('app.update.interval')
+    } else {
+        $value = if ($current -and $current.PSObject.Properties['Value']) { "$($current.Value)" } else { '' }
+        $status = if ($current -and $current.PSObject.Properties['Status']) { "$($current.Status)" } else { '' }
+        if ($value -eq "$FirefoxUpdateCheckSeconds" -and $status -eq 'locked') { return $null }
+        $prefs['app.update.interval'] = [pscustomobject]@{ Value = $FirefoxUpdateCheckSeconds; Status = 'locked'; Type = 'number' }
+    }
+    if ($prefs.Count) {
+        if (-not (Test-Path -LiteralPath $FirefoxPolicyKey)) { New-Item -Path $FirefoxPolicyKey -Force | Out-Null }
+        $json = @(($prefs | ConvertTo-Json -Depth 5) -split "`r?`n")
+        New-ItemProperty -LiteralPath $FirefoxPolicyKey -Name 'Preferences' -PropertyType MultiString -Value $json -Force | Out-Null
+    } else {
+        Remove-ItemProperty -LiteralPath $FirefoxPolicyKey -Name 'Preferences' -ErrorAction SilentlyContinue
+    }
+    if ($Remove) { 'app.update.interval policy removed' } else { "app.update.interval set to $FirefoxUpdateCheckSeconds seconds by policy" }
+}
+
+# Firefox's hourly part: its update check every hour, by policy; anything
+# stopping its updates (the DisableAppUpdate or AppAutoUpdate policies);
+# and its version against Mozilla's latest. Returns a result like
+# Invoke-BrowserUpdate's: Current, Behind or Failed.
+function Invoke-FirefoxCheck {
+    param([Parameter(Mandatory)][hashtable]$Browser, [Parameter(Mandatory)][string]$Dir)
+    $result = { param($r, $m) [pscustomobject]@{ Result = $r; Message = $m } }
+    try {
+        $msg = Set-FirefoxUpdatePolicy
+        if ($msg) { Write-Log "  [$($Browser.Name)] $msg" }
+    } catch {
+        return & $result 'Failed' "couldn't set its update policy: $($_.Exception.Message)"
+    }
+    $policy = Get-ItemProperty -LiteralPath $FirefoxPolicyKey -ErrorAction SilentlyContinue
+    if ($policy -and $policy.PSObject.Properties['DisableAppUpdate'] -and [int]$policy.DisableAppUpdate -eq 1) {
+        return & $result 'Failed' "the DisableAppUpdate policy turns its updates off ($FirefoxPolicyKey)"
+    }
+    if ($policy -and $policy.PSObject.Properties['AppAutoUpdate'] -and [int]$policy.AppAutoUpdate -eq 0) {
+        return & $result 'Failed' "the AppAutoUpdate policy (0) stops it installing updates by itself ($FirefoxPolicyKey)"
+    }
+
+    $installed = (Get-BrowserVersion $Browser $Dir).Exe
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $v = Invoke-RestMethod -UseBasicParsing -TimeoutSec 60 -Uri 'https://product-details.mozilla.org/1.0/firefox_versions.json'
+        $release = ConvertTo-Version $v.LATEST_FIREFOX_VERSION
+        $esr = ConvertTo-Version $v.FIREFOX_ESR
+        # An ESR Firefox stays on its major version
+        $latest = if ($installed.Major -eq $esr.Major) { $esr } else { $release }
+    } catch {
+        return & $result 'Current' "couldn't get Mozilla's latest version ($($_.Exception.Message)); Firefox checks for updates itself every hour"
+    }
+    if ($installed -ge $latest) { return & $result 'Current' "the latest is $latest" }
+    & $result 'Behind' "the latest is $latest; Firefox checks for it itself within the hour"
+}
+
 # Starts the countdown in the session of everyone who has the browser open,
 # as them: a task of their own (Relaunch <name>), started now. A countdown
 # already running is left alone.
@@ -220,7 +374,7 @@ function Start-RelaunchTask {
             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                 -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
             Register-ScheduledTask -TaskPath $TaskFolder -TaskName $name -Action $action -Principal $principal -Settings $settings `
-                -Description "browser.update: restarts Chrome or Edge for $user $RelaunchMinutes minutes after an update; started by the hourly check" -Force | Out-Null
+                -Description "browser.update: restarts Chrome, Edge or Firefox for $user $RelaunchMinutes minutes after an update; started by the hourly check" -Force | Out-Null
             Start-ScheduledTask -TaskPath $TaskFolder -TaskName $name
             Write-Log "  Countdown started for $user ($RelaunchMinutes minutes)" Green
         } catch {
@@ -242,17 +396,21 @@ function Invoke-HourlyCheck {
             continue
         }
         $before = Get-BrowserVersion $b $dir
-        $r = Invoke-BrowserUpdate $b
+        $r = if ($b.Kind -eq 'Firefox') { Invoke-FirefoxCheck $b $dir } else { Invoke-BrowserUpdate $b }
         $after = Get-BrowserVersion $b $dir
         switch ($r.Result) {
             'Updated' { Write-Log "  [$($b.Name)] $($before.Installed) -> $($after.Installed): $($r.Message)" Green }
-            'Current' { Write-Log "  [$($b.Name)] $($after.Installed): up to date" }
+            'Current' { Write-Log "  [$($b.Name)] $($after.Installed): up to date ($($r.Message))" }
+            'Behind' { Write-Log "  [$($b.Name)] $($after.Installed): $($r.Message)" Yellow }
             default {
                 Write-Log "  [$($b.Name)] $($after.Installed): update check failed: $($r.Message)" Red
                 $failed = $true
             }
         }
 
+        if ($after.State -eq 'pending-elevate') {
+            Write-Log "  [$($b.Name)] Has an update that needs an administrator's permission to install; Firefox asks for it when it restarts" Yellow
+        }
         # Waiting for a restart, whether this update or the updater's own
         # earlier one: whoever has it open gets the countdown
         if ($after.Pending) {
@@ -260,10 +418,11 @@ function Invoke-HourlyCheck {
                     Where-Object { "$($_.Path)" -like "$dir\*" -and $_.UserName })
             $users = @($open | ForEach-Object { $_.UserName } | Sort-Object -Unique)
             if ($users.Count) {
-                Write-Log "  [$($b.Name)] $($after.Installed) is waiting for a restart; open for: $($users -join ', ')" Yellow
+                $what = if ($after.State) { "An update ($($after.State))" } else { "$($after.Installed)" }
+                Write-Log "  [$($b.Name)] $what is waiting for a restart; open for: $($users -join ', ')" Yellow
                 $relaunchUsers += $users
             } else {
-                Write-Log "  [$($b.Name)] $($after.Installed) takes over the next time it's opened"
+                Write-Log "  [$($b.Name)] The update takes over the next time it's opened"
             }
         }
     }
@@ -294,7 +453,7 @@ function New-LogDir {
 # ---------------------------------------------------------------
 
 # Closes a program the way signing out of Windows does (Restart Manager), so
-# Chrome and Edge save every window and tab first
+# Chrome, Edge and Firefox save every window and tab first
 $RestartManager = @'
 using System;
 using System.Runtime.InteropServices;
@@ -355,11 +514,12 @@ function Restart-Browser {
     $procs = @(Get-SessionProcess $Browser)
     if (-not $procs.Count) { return }
     $hadWindow = [bool]@($procs | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }).Count
-    # The browser process itself: the one without --type= (the others are
-    # its tabs and helpers, and close with it)
+    # The browser process itself: the one without --type= (Chrome, Edge) or
+    # -contentproc (Firefox). The others are its tabs and helpers, and close
+    # with it.
     $session = (Get-Process -Id $PID).SessionId
     $mainIds = @(Get-CimInstance Win32_Process -Filter "Name = '$($Browser.Exe)' AND SessionId = $session" -ErrorAction SilentlyContinue |
-            Where-Object { "$($_.CommandLine)" -notmatch '--type=' } | ForEach-Object { [int]$_.ProcessId })
+            Where-Object { "$($_.CommandLine)" -notmatch [regex]::Escape($Browser.ChildArg) } | ForEach-Object { [int]$_.ProcessId })
     $main = @($procs | Where-Object { $mainIds -contains $_.Id })
     if (-not $main.Count) { $main = $procs }
 
@@ -385,7 +545,7 @@ function Restart-Browser {
     }
 
     if ($hadWindow -and -not $NoReopen) {
-        Start-Process -FilePath (Join-Path $Browser.Dir $Browser.Exe) -ArgumentList '--restore-last-session'
+        Start-Process -FilePath (Join-Path $Browser.Dir $Browser.Exe) -ArgumentList $Browser.RestoreArg
         Write-Log "  [$($Browser.Name)] Closed$(if ($graceful) { ' cleanly' }) and opened again with its tabs" Green
     } else {
         Write-Log "  [$($Browser.Name)] Closed (it had no window open, so not opened again)" Green
@@ -583,7 +743,7 @@ function Install-BrowserUpdate {
         -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskPath $TaskFolder -TaskName $CheckTaskName -Action $action -Trigger @($hourly, $startup) `
         -Principal $principal -Settings $settings `
-        -Description "browser.update: updates Chrome and Edge every hour, and restarts an open one $RelaunchMinutes minutes after an update" -Force | Out-Null
+        -Description "browser.update: updates Chrome, Edge and Firefox every hour, and restarts an open one $RelaunchMinutes minutes after an update" -Force | Out-Null
     Write-Host "  Task: Task Scheduler > $($TaskFolder)$CheckTaskName, every hour as SYSTEM" -ForegroundColor Green
 
     Start-ScheduledTask -TaskPath $TaskFolder -TaskName $CheckTaskName
@@ -605,6 +765,12 @@ function Uninstall-BrowserUpdate {
     }
     Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "  Tasks and $InstallDir removed" -ForegroundColor Green
+    try {
+        $msg = Set-FirefoxUpdatePolicy -Remove
+        if ($msg) { Write-Host "  Firefox: $msg" -ForegroundColor Green }
+    } catch {
+        Write-Host "  Firefox: couldn't remove the app.update.interval policy: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
     Write-Host "The logs stay in $LogDir."
 }
 
