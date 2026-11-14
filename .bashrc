@@ -1,4 +1,4 @@
-# 20261108 Kirby
+# 20261113 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -984,7 +984,7 @@ function patchpip()
     for pkg in $("$py" -m pip list --outdated | tail -n +3 | awk '{print $1}')
     do
         mkbanner "Upgrading $pkg" '.' yellow
-        "$py" -m pip install -U --force-reinstall --ignore-requires-python "$pkg"
+        "$py" -m pip install -U --force-reinstall --ignore-requires-python "$pkg" 2>&1 |tail -n 20
     done
     if [[ -d ~/Library/Caches/pip ]]
     then
@@ -1164,7 +1164,7 @@ function patchcpan()
     for mod in $("$perl" "$outdated" -p)
     do
         mkbanner "Upgrading $mod" '.' yellow
-        "$pbin/cpan" -f -i "$mod"
+        "$pbin/cpan" -f -i "$mod" 2>&1 |tail -n 20
     done
     for mod in $("$perl" "$outdated" --verbose | awk '{print $4}')
     do

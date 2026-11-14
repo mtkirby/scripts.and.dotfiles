@@ -161,8 +161,10 @@
                           a full scan, on Fridays and with -FullScan only (each
                           run downloads a few hundred MB)
        eekscan:           if C:\EEK exists, Emsisoft Emergency Kit, updated,
-                          detect only: a full scan on Fridays and with
-                          -FullScan, quick otherwise
+                          detect only, the same scan every day: running
+                          programs and spyware traces, including
+                          potentially unwanted programs. No folders of
+                          files (that would be /quick or /f=)
     6. Checks. Remote access, UAC, and encryption are repaired. Disk and
        Windows-health results are reported.
        - remoteaccess:    Remote Desktop, Remote Assistance, and WinRM turned
@@ -4718,6 +4720,9 @@ function Start-SafetyScan {
 
         # Safety Scanner adds to its log each run; this run's part is what's new
         $before = [string](Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue)
+        # From msert /? (Microsoft doesn't document them elsewhere): /Q quiet,
+        # no window; /N detect only; /F full scan. /F:Y would also clean, and
+        # /H detects only high and severe threats; neither is used.
         $opts = @('/Q', '/N')
         if ($full) { $opts += '/F' }
         Write-Host "Running a $(if ($full) { "full scan ($why; this can take hours)" } else { 'quick scan' }), detect only: msert.exe $($opts -join ' ')"
@@ -4754,9 +4759,20 @@ function Start-SafetyScan {
 # engine from Defender's (Bitdefender's plus Emsisoft's own), so unlike the Safety
 # Scanner it's an independent second opinion. Runs only if C:\EEK exists (the kit
 # is portable: extract it there). Updates its signatures, then scans detect only
-# (no /quarantine or /delete): /full on Fridays and with -FullScan (can
-# take hours), /quick otherwise. Output goes to eek-scan-<date>.log in $LogDir, which opens in Notepad at the
-# end of the run if anything is found.
+# (no /quarantine or /delete), the same scan every day (Fridays and
+# -FullScan don't change it). From a2cmd /? (version 2025.7): /memory scans
+# running programs for malware, /traces the registry and disk for spyware
+# traces, and /malware does both; /pup also reports potentially unwanted
+# programs, which is what many scam installs are; /archive and /ntfs make
+# a file scan look inside archives and NTFS alternate data streams;
+# /rebootallowed lets it restart Windows "if this is required to remove
+# found threats", which can't happen here, as nothing is removed. None of
+# these scans folders of files: that's /quick (important folders) or
+# /f=<path>. a2cmd has no /full: given a switch it doesn't know it scans
+# nothing ("Incorrect parameters - no objects to scan"), which is a
+# failure here.
+# Output goes to eek-scan-<date>.log in $LogDir, which opens in Notepad at
+# the end of the run if anything is found.
 # This runs as administrator, but a folder made at the root of C: can be changed
 # by the user who made it, so a2cmd.exe must be validly signed by Emsisoft, checked
 # before the update and again after it.
@@ -4784,42 +4800,95 @@ function Start-EmsisoftScan {
         return
     }
 
+    # a2cmd's result codes, from a2cmd /?
+    $meaning = {
+        param($code)
+        switch ($code) {
+            0 { 'no infections found / done' }
+            1 { 'infections found' }
+            2 { 'unable to connect to the service' }
+            3 { 'not started: insufficient permissions' }
+            4 { 'incorrect command or parameter' }
+            5 { 'unable to initialize the scan engine' }
+            6 { 'required files missing: reinstall the kit' }
+            7 { 'quarantine restore or delete failed' }
+            8 { 'update failed' }
+            9 { 'needs elevated permissions' }
+            10 { 'Windows version not supported' }
+            default { 'unknown code' }
+        }
+    }
+
     Write-Banner 'a2cmd /update' '.'
     Invoke-Native $a2cmd '/update'
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "WARN: a2cmd /update exited $LASTEXITCODE; scanning with the signatures it has" -ForegroundColor Yellow
+        Write-Host "WARN: a2cmd /update exited $LASTEXITCODE ($(& $meaning $LASTEXITCODE)); scanning with the signatures it has" -ForegroundColor Yellow
     }
     if (-not (& $signedByEmsisoft)) {
         Write-Fail "$a2cmd isn't validly signed by Emsisoft after the update; not run"
         return
     }
 
-    $full = Test-FullScanDay
-    $why = if ($FullScan) { '-FullScan' } else { 'Friday' }
-    $scan = if ($full) { '/full' } else { '/quick' }
+    # One argument list per a2cmd run
+    $runs = @(, @('/memory', '/traces', '/pup', '/malware', '/archive', '/ntfs', '/rebootallowed'))
     $log = Join-Path $LogDir "eek-scan-$runStamp.log"
-    Write-Banner "a2cmd $scan$(if ($full) { " ($why; this can take hours)" })" '.'
-    # Shown as it runs, and kept for the result check and the log
-    $out = @(& $a2cmd $scan 2>&1 | ForEach-Object {
-        $line = "$_" -replace "`0", ''
-        $line | Out-Host
-        $line
-    })
-    $rc = $LASTEXITCODE
+    $out = @()
+    $rc = 0
+    $count = 0
+    foreach ($arguments in $runs) {
+        Write-Banner "a2cmd $($arguments -join ' ')" '.'
+        # Shown as it runs, and kept for the result check and the log
+        $part = @(& $a2cmd @arguments 2>&1 | ForEach-Object {
+                $line = "$_" -replace "`0", ''
+                $line | Out-Host
+                $line
+            })
+        if ($LASTEXITCODE -ne 0 -and $rc -eq 0) { $rc = $LASTEXITCODE }
+        $out += $part
+        # Each run ends with its own "Found: n"; one without it makes the result unclear
+        $summary = $part | Where-Object { $_ -match '(?i)^\s*found\s*:?\s*\d+\s*$' } | Select-Object -Last 1
+        if ($summary -match '(\d+)\s*$') {
+            if ($count -ge 0) { $count += [int]$Matches[1] }
+        } else {
+            $count = -1
+            if ($part -match '(?i)incorrect parameters') {
+                Write-Fail "a2cmd didn't accept: $($arguments -join ' ') ($(@($part -match '(?i)incorrect parameters')[0].Trim()))"
+            }
+        }
+    }
     Set-Content -LiteralPath $log -Value $out -Encoding UTF8
 
     $detected = @($out | Where-Object { $_ -match '(?i)\bdetected:' })
-    $summary = $out | Where-Object { $_ -match '(?i)^\s*found\s*:?\s*\d+\s*$' } | Select-Object -Last 1
-    $count = if ($summary -match '(\d+)\s*$') { [int]$Matches[1] } else { -1 }
     if ($detected -or $count -gt 0 -or $rc -ne 0) {
         $what = if ($detected) { ($detected | ForEach-Object { $_.Trim() }) -join '; ' } elseif ($count -gt 0) { "$count found" } else { 'no detections listed' }
-        Write-Fail "Emsisoft found malware or failed (exit code $rc; nothing removed, detect only; see $log): $what"
+        Write-Fail "Emsisoft found malware or failed (exit code $rc, $(& $meaning $rc); nothing removed, detect only; see $log): $what"
         # Found something: open the log in Notepad at the end of the run
         if ($detected -or $count -gt 0) { $script:EekLog = $log }
     } elseif ($count -eq 0) {
         Write-Host 'Emsisoft Emergency Kit: no malware found' -ForegroundColor Green
     } else {
-        Write-Fail "Emsisoft results unclear: no summary in the output (exit code $rc); see $log"
+        Write-Fail "Emsisoft results unclear: no summary in the output (exit code $rc, $(& $meaning $rc)); see $log"
+    }
+
+    # The kit's quarantine. These scans only detect, so anything in it was
+    # quarantined by hand (or by an earlier version of this script). Added
+    # to the log, and to the report when it lists anything: what's left once
+    # a2cmd's banner and an empty-quarantine message are taken out.
+    Write-Banner 'a2cmd /ql' '.'
+    $ql = @(& $a2cmd '/ql' 2>&1 | ForEach-Object {
+            $line = "$_" -replace "`0", ''
+            $line | Out-Host
+            $line
+        })
+    Add-Content -LiteralPath $log -Value (@('', '=== a2cmd /ql (quarantine)') + $ql) -Encoding UTF8
+    $items = @($ql | Where-Object {
+            $_.Trim() -and $_ -notmatch '(?i)^\s*(emsisoft commandline scanner|last update|update time|\(c\))' -and
+            $_ -notmatch '(?i)\b(no objects|no items|nothing|is empty|0 objects)\b'
+        } | ForEach-Object { $_.Trim() })
+    if ($items.Count -gt 0) {
+        $script:Notes.Add("Emsisoft quarantine (a2cmd /ql; restore with a2cmd /qr=<n>, delete with /qd=<n>):$(Format-ItemList $items)")
+    } else {
+        Write-Host 'Emsisoft quarantine: empty' -ForegroundColor Green
     }
 }
 
@@ -4870,9 +4939,12 @@ function Start-DefenderScan {
     }
     # ScanType 2 = full, 1 = quick
     $full = Test-FullScanDay
+    # No -CpuThrottling: Microsoft documents it only as "the maximum CPU usage
+    # percentage" (default 50), not whether it takes a value, and a switch
+    # MpCmdRun rejects would mean no scan at all. The limit above covers
+    # "scheduled and custom scans"; if a quick or full scan started here
+    # isn't one of those, it uses more CPU, which is the safer failure.
     $opts = @('-Scan', '-ScanType', $(if ($full) { '2' } else { '1' }))
-    # Ask this scan to follow that limit, on platforms whose MpCmdRun lists the switch
-    if ((& $mpcmd -h 2>&1 | Out-String) -match 'CpuThrottling') { $opts += '-CpuThrottling' }
 
     # The hidden PowerShell runs MpCmdRun, logs its output, then appends the exit
     # code. Encoded, so there is no quoting to survive Windows command-line parsing.
@@ -5646,13 +5718,18 @@ function Remove-RemoteAccessApp {
         # Inno Setup
         if ($id -match '_is1$' -or $leaf -match '^unins\d+\.exe$') { return "$arg /VERYSILENT /SUPPRESSMSGBOXES /NORESTART".Trim() }
         switch ($app) {
-            'AnyDesk' {
-                if ($arg -notmatch '--uninstall') { $arg += ' --uninstall' }
-                if ($arg -notmatch '--silent') { $arg += ' --silent' }
+            # AnyDesk's own uninstall entry is --uninstall, which opens its
+            # uninstall window; --silent --remove removes it with no window
+            # (support.anydesk.com, Command-Line Interface)
+            'AnyDesk' { return ("$($arg -replace '--(uninstall|silent|remove)\b', '') --silent --remove" -replace '\s+', ' ').Trim() }
+            'RustDesk' { if ($arg -notmatch '--uninstall') { $arg += ' --uninstall' }; return $arg.Trim() }
+            # -fulluninstall (MeshCentral docs). One agent version wrote
+            # -funinstall in its uninstall entry, which doesn't work.
+            'MeshAgent' {
+                $arg = $arg -replace '(^|\s)-funinstall\b', '$1-fulluninstall'
+                if ($arg -notmatch '-fulluninstall') { $arg += ' -fulluninstall' }
                 return $arg.Trim()
             }
-            'RustDesk' { if ($arg -notmatch '--uninstall') { $arg += ' --uninstall' }; return $arg.Trim() }
-            'MeshAgent' { if ($arg -notmatch 'uninstall') { $arg += ' -fulluninstall' }; return $arg.Trim() }
         }
         # NSIS (TeamViewer and others): uninstall.exe, uninst.exe
         if ($leaf -match 'uninst' -and $arg -notmatch '(^|\s)/S(\s|$)') { return "$arg /S".Trim() }
