@@ -330,6 +330,7 @@ $ApprovedChromeExtensions = @(
     'jmjflgjpcpepeafmmgdpfkogkghcpiha'  # Edge relevant text changes
     'ghbmnnjooekpmoecnnnilnnbdlolhkhi'  # Google Docs Offline
     'efaidnbmnnnibpcajpcglclefindmkaj'  # Adobe Acrobat
+    'efbjojhplkelaegfbieplglfidafgoka'  # VT4Browser VirusTotal
 )
 
 # ---------------------------------------------------------------
@@ -344,6 +345,7 @@ $ApprovedChromeExtensions = @(
 # ---------------------------------------------------------------
 $ApprovedEdgeExtensions = @(
     'gmgoamodcdcjnbaobigkjelfplakmdhh'  # Adblock Plus (Edge Add-ons)
+    'feklilkmifhginhfoogmgelcopaplodb'  # VT4Browser VirusTotal
 )
 
 # ---------------------------------------------------------------
@@ -398,6 +400,13 @@ $AdobeDisableJavaScript = $true
 # ---------------------------------------------------------------
 $BrowserRelaunchNotification = 2
 $BrowserRelaunchHours = 1  # 1 is the shortest the browsers allow
+
+# How often Google's updater checks for a new Chrome, in minutes (its
+# AutoUpdateCheckPeriodMinutes policy; 1 to 43200). Without it, every 4.5
+# hours. The updater wakes once an hour and checks only if this long has
+# passed, so anything under 60 means a check every hour. Only honored on a
+# PC in a domain, joined to Entra ID or enrolled in Chrome Enterprise Core.
+$ChromeUpdateCheckMinutes = 55
 
 # ---------------------------------------------------------------
 # Programs allowed to change files in folders that Controlled folder access
@@ -1200,6 +1209,13 @@ function Set-ChromeHardening {
     Set-ChromePolicy -Name 'RelaunchNotification' -Value $BrowserRelaunchNotification -Description 'Prompt to relaunch after an update (1 = ask, 2 = ask, then relaunch)'
     Set-ChromePolicy -Name 'RelaunchNotificationPeriod' -Value ([int]$BrowserRelaunchHours * 3600000) -Description "Relaunch within $BrowserRelaunchHours hours of an update"
 
+    # Extra: how often Google's updater checks for a new Chrome
+    # ($ChromeUpdateCheckMinutes at the top). A policy of the updater, not of
+    # Chrome, so it's under Google\Update. Like the search engine policies
+    # below, the updater ignores it unless the PC is managed (checked below).
+    Set-TrackedValue -Path 'HKLM:\SOFTWARE\Policies\Google\Update' -Name 'AutoUpdateCheckPeriodMinutes' -Value ([int]$ChromeUpdateCheckMinutes)
+    Write-Host "  [Chrome] Google's updater policy set: check for updates every $ChromeUpdateCheckMinutes minutes (in practice, every hour)" -ForegroundColor Green
+
     # 1.13 Disable saving browser history - Disabled (i.e. allow history)
     # Note: the policy "Disable saving browser history" set to Disabled means history IS saved.
     # Keeping history aids forensics.
@@ -1549,7 +1565,7 @@ function Set-ChromeHardening {
         $managed = [bool]($enrolled -and $enrolled.PSObject.Properties['dmtoken'])
     }
     if (-not $managed) {
-        Write-Host "  [Chrome] This PC isn't in a domain, Entra ID or Chrome Enterprise Core, so Chrome ignores the search engine and startup policies" -ForegroundColor Yellow
+        Write-Host "  [Chrome] This PC isn't in a domain, Entra ID or Chrome Enterprise Core, so Chrome ignores the search engine and startup policies, and Google's updater ignores the $ChromeUpdateCheckMinutes-minute update check (it checks every 4.5 hours)" -ForegroundColor Yellow
     }
 
     Write-Host "Chrome policies applied. Verify at chrome://policy/ after restarting Chrome." -ForegroundColor Cyan
