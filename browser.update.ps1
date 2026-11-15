@@ -33,9 +33,12 @@
       (none)       The hourly check. Runs as SYSTEM from Task Scheduler.
       -Relaunch    The countdown and restart, in the signed-in person's own
                    session. Started by the hourly check; not run by hand.
-      -Install     Copies this script to C:\Program Files\browser.update and
-                   sets up the tasks. install-browser.update.cmd runs this.
-      -Uninstall   Removes the tasks and the copy; the logs stay.
+      -Install     Copies this script to C:\Program Files\browser.update,
+                   sets up the tasks and turns on Task Scheduler's history
+                   (each task's History tab, 100 MB).
+                   install-browser.update.cmd runs this.
+      -Uninstall   Removes the tasks and the copy; the logs, and the task
+                   history, stay.
 
     Logs: C:\ProgramData\browser.update\browser.update.log (the hourly
     check) and %LOCALAPPDATA%\browser.update\relaunch.log (each person's
@@ -715,6 +718,35 @@ function Assert-Administrator {
     }
 }
 
+# Task Scheduler's history (each task's History tab) is one event log for
+# every task, and Windows ships with it off. On, it records each run of the
+# hourly check and the countdowns: when it started, how it ended and its
+# exit code. 100 MB keeps weeks (Windows' 10 MB, a few days); a bigger size
+# set some other way is left alone. win11.restrict.and.scan.ps1 does the
+# same. Uninstalling leaves it on.
+function Enable-TaskHistory {
+    $logName = 'Microsoft-Windows-TaskScheduler/Operational'
+    $size = 100MB
+    try {
+        $cfg = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration $logName
+        $oldSize = [long]$cfg.MaximumSizeInBytes
+        if (-not $cfg.IsEnabled -or $oldSize -lt $size) {
+            $cfg.IsEnabled = $true
+            if ($oldSize -lt $size) { $cfg.MaximumSizeInBytes = $size }
+            $cfg.SaveChanges()
+        }
+        $now = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration $logName
+    } catch {
+        Write-Host "  Couldn't turn on Task Scheduler's history: $($_.Exception.Message)" -ForegroundColor Yellow
+        return
+    }
+    if ($now.IsEnabled) {
+        Write-Host "  Task history: on, up to $([Math]::Round($now.MaximumSizeInBytes / 1MB)) MB (each task's History tab)" -ForegroundColor Green
+    } else {
+        Write-Host "  Task Scheduler's history didn't turn on (a policy may be holding it off)" -ForegroundColor Yellow
+    }
+}
+
 function Install-BrowserUpdate {
     Assert-Administrator
     Write-Host 'Installing browser.update' -ForegroundColor Cyan
@@ -745,6 +777,7 @@ function Install-BrowserUpdate {
         -Principal $principal -Settings $settings `
         -Description "browser.update: updates Chrome, Edge and Firefox every hour, and restarts an open one $RelaunchMinutes minutes after an update" -Force | Out-Null
     Write-Host "  Task: Task Scheduler > $($TaskFolder)$CheckTaskName, every hour as SYSTEM" -ForegroundColor Green
+    Enable-TaskHistory
 
     Start-ScheduledTask -TaskPath $TaskFolder -TaskName $CheckTaskName
     Write-Host '  First check started' -ForegroundColor Green
