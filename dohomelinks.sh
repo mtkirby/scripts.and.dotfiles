@@ -55,4 +55,12 @@ done
 # Login shells (every macOS Terminal) read only .bash_profile
 link .bashrc .bash_profile || rc=1
 
+if [[ ! -d ~/.ssh ]]
+then
+    mkdir ~/.ssh
+    chmod 700 ~/.ssh
+    cp -f "$repodir/sshconfig" ~/.ssh/config
+    chmod 600 ~/.ssh/config
+fi
+
 exit "$rc"
