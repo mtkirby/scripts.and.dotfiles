@@ -42,7 +42,9 @@
     3. Hardening, re-applied every run so nothing drifts:
        - cis-chrome:      Chrome policies (CIS Google Chrome Benchmark v3.0.0), the
                           extension allowlist, the JavaScript optimizer allowlist,
-                          and Chrome Remote Desktop blocked. Against scam pages:
+                          Adblock Plus's allowlist of sites
+                          (adblockplus.allowlist.txt on GitHub, as a filter
+                          list), and Chrome Remote Desktop blocked. Against scam pages:
                           the remote access programs' sites blocked (see
                           remotetools),
                           notifications and pop-ups blocked for every site,
@@ -56,7 +58,8 @@
                           notification, pop-up, download and site blocks, and
                           PDFs in its own viewer, as Chrome. An extension
                           allowlist ($ApprovedEdgeExtensions): Edge disables
-                          every other extension (they aren't deleted).
+                          every other extension (they aren't deleted). The
+                          same Adblock Plus allowlist as Chrome.
        - cis-services:    unneeded services disabled
        - quickassist:     Quick Assist removed (the app, the provisioned package
                           and the Windows capability). Noted when it was
@@ -347,6 +350,20 @@ $ApprovedEdgeExtensions = @(
     'gmgoamodcdcjnbaobigkjelfplakmdhh'  # Adblock Plus (Edge Add-ons)
     'feklilkmifhginhfoogmgelcopaplodb'  # VT4Browser VirusTotal
 )
+
+# ---------------------------------------------------------------
+# Sites Adblock Plus doesn't block ads on: EDIT adblockplus.allowlist.txt
+# in this script's GitHub repository, not this script
+# Adblock Plus's own allowlist can't be set by policy, but it can be given
+# extra filter lists, so the allowlist is a filter list there (one
+# "@@||site^$document" line per site), which Chrome's and Edge's Adblock Plus
+# subscribe to. Adblock Plus downloads it again about once a day, so a site
+# added to the file on GitHub is allowed by the next day, without running
+# this script. The person can't remove the list, and can still allowlist
+# other sites themselves. '' for none (an Adblock Plus already subscribed
+# may keep the list: empty the file instead).
+# ---------------------------------------------------------------
+$AdblockPlusAllowlistUrl = 'https://raw.githubusercontent.com/mtkirby/scripts.and.dotfiles/main/adblockplus.allowlist.txt'
 
 # ---------------------------------------------------------------
 # Sites allowed to use Chrome's JavaScript optimizer (see Section 1)
@@ -861,6 +878,25 @@ function Set-ChromePolicyList {
     Write-Host "  [$Browser] $Name = [$($Values -join ', ')]  # $Description" -ForegroundColor Green
 }
 
+# Adblock Plus's managed settings, which Chrome and Edge hand to the
+# extension (its "3rdparty" policy, which they read on any PC):
+# additional_subscriptions, the filter lists it's subscribed to, here the
+# allowlist ($AdblockPlusAllowlistUrl). See chrome://policy (or
+# edge://policy) > Adblock Plus.
+function Set-AdblockPlusPolicy {
+    param([ValidateSet('Chrome', 'Edge')][string]$Browser = 'Chrome')
+    $id = if ($Browser -eq 'Edge') { 'gmgoamodcdcjnbaobigkjelfplakmdhh' } else { 'cfhdojbkjhnklbpkdaibdccddilifddb' }
+    $urls = @()
+    $url = "$AdblockPlusAllowlistUrl".Trim()
+    if ($url -match '^https://\S+$') {
+        $urls = @($url)
+    } elseif ($url) {
+        Write-Fail "[$Browser] Adblock Plus allowlist '$url' isn't an https:// address; left out"
+    }
+    Set-ChromePolicyList -Browser $Browser -Name "3rdparty\extensions\$id\policy\additional_subscriptions" -Values $urls `
+        -Description 'Adblock Plus filter lists: the allowlist (adblockplus.allowlist.txt)'
+}
+
 # The websites of the remote access programs the remotetools step removes,
 # blocked in Chrome and Edge (URLBlocklist) so a scammer can't talk someone
 # into downloading one again. A site also blocks its subdomains; a path
@@ -1362,6 +1398,7 @@ function Set-ChromeHardening {
 
     Set-ChromePolicyList -Name 'ExtensionInstallAllowlist' -Values $allowIds -Description 'Approved extensions'
     Set-ChromePolicyList -Name 'ExtensionInstallBlocklist' -Values @('*') -Description 'Block every extension not on the allowlist'
+    Set-AdblockPlusPolicy -Browser Chrome
 
     # 2.11 Allow download restrictions - Block potentially dangerous downloads
     # Values: 0 = no restrictions, 1 = block dangerous files, 2 = block potentially
@@ -1645,6 +1682,7 @@ function Set-EdgeHardening {
     }
     Set-ChromePolicyList -Browser Edge -Name 'ExtensionInstallAllowlist' -Values $allowIds -Description 'Approved extensions'
     Set-ChromePolicyList -Browser Edge -Name 'ExtensionInstallBlocklist' -Values @('*') -Description 'Block every extension not on the allowlist'
+    Set-AdblockPlusPolicy -Browser Edge
 }
 
 # ---------------------------------------------------------------

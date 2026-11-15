@@ -1,0 +1,65 @@
+[Adblock Plus 2.0]
+! Title: Allowlist (win11.restrict.and.scan.ps1)
+! Expires: 1 days
+!
+! Sites Adblock Plus doesn't block ads on, in Chrome and Edge on the PCs
+! win11.restrict.and.scan.ps1 runs on. Adblock Plus downloads this file from
+! GitHub about once a day, so a change here reaches them by the next day.
+!
+! One line per site, without https:// or a path; the site's subdomains are
+! included. Lines starting with ! are comments. For example:
+!   @@||example.com^$document
+
+! Every .gov site
+@@||gov^$document
+@@||adobe.com^$document
+@@||amazon.com^$document
+@@||americanexpress.com^$document
+@@||apple.com^$document
+@@||auth0.com^$document
+@@||bankofamerica.com^$document
+@@||bcbs.com^$document
+@@||capitalone.com^$document
+@@||chase.com^$document
+@@||citibank.com^$document
+@@||cloud.microsoft^$document
+@@||cloudflare.com^$document
+@@||cloudfront.net^$document
+@@||cvs.com^$document
+@@||dhl.com^$document
+@@||discover.com^$document
+@@||docusign.com^$document
+@@||docusign.net^$document
+@@||equifax.com^$document
+@@||experian.com^$document
+@@||express-scripts.com^$document
+@@||fairview.org^$document
+@@||fedex.com^$document
+@@||fidelity.com^$document
+@@||github.com^$document
+@@||google.com^$document
+@@||hcaptcha.com^$document
+@@||healthpartners.com^$document
+@@||microcenter.com^$document
+@@||microsoft.com^$document
+@@||mychart.com^$document
+@@||okta.com^$document
+@@||optumrx.com^$document
+@@||paypal.com^$document
+@@||paypalobjects.com^$document
+@@||recaptcha.net^$document
+@@||schwab.com^$document
+@@||sharepoint.com^$document
+@@||stripe.com^$document
+@@||transunion.com^$document
+@@||uhc.com^$document
+@@||ups.com^$document
+@@||usps.com^$document
+@@||vanguard.com^$document
+@@||venmo.com^$document
+@@||walgreens.com^$document
+@@||wellsfargo.com^$document
+@@||xcelenergy.com^$document
+@@||zellepay.com^$document
+@@||zoom.com^$document
+@@||zoom.us^$document
