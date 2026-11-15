@@ -4050,6 +4050,7 @@ then
         # pkgbase systems) with pkg check, other base files with freebsd-update IDS,
         # which only works on releases kept up to date with freebsd-update, not
         # custom kernels.
+        mkbanner "freebsdmodpkgcheck" '#' yellow
         local kerndir path module pkg text ids idsrun="" havepkg=""
         local found=0 modified=0
         local -a asroot=(sudo) paths
@@ -4137,6 +4138,7 @@ then
         # Packages (and pkgbase systems) are checked with pkg check. Other base
         # programs are checked with freebsd-update IDS, which is slow and only works
         # on releases kept up to date with freebsd-update. Jails are skipped.
+        mkbanner "myfreebsdprocsigs" '#' yellow
         local pid jid flags comm exe pkg text ids idsrun=""
         local -a asroot=(sudo) pids exes
         local -A verify
@@ -4211,6 +4213,7 @@ then
         # OpenBSD doesn't reveal a running program's path, so each one is found by
         # its inode (from fstat). Base programs have no recorded checksums, so they
         # are only checked for being in a base directory.
+        mkbanner "myopenbsdprocsigs" '#' yellow
         local mount ino cmd pid dev exe pkg want have
         local -a asroot=(sudo)
         local -a dirs=(/bin /sbin /usr/bin /usr/sbin /usr/libexec /usr/X11R6/bin
@@ -4278,6 +4281,7 @@ then
         # Uses /proc, which must be mounted. pkgsrc programs are checked with
         # pkg_admin check. Base programs have no recorded checksums, so they are
         # only checked for being in a base directory.
+        mkbanner "mynetbsdprocsigs" '#' yellow
         local exe pkg
         local -a asroot=(sudo) exes
         local -A verify
@@ -4367,6 +4371,7 @@ then
         # any IPS package, or that changed since (pkg verify), followed by pkg
         # verify's reasons. modinfo doesn't say which file a module came from, so
         # every file with its name in the module path is checked.
+        mkbanner "openindianamodpkgcheck" '#' yellow
         local plat arch module f pkg verify why
         local found=0 modified=0
         local -a asroot=(sudo) modules pkgs
@@ -4464,6 +4469,7 @@ then
         # The whole OS is IPS packages, so base programs are checked too, and
         # MODIFIED lines are followed by pkg verify's reasons (Hash, Mode, ...).
         # Processes in other zones are skipped.
+        mkbanner "myopenindianaprocsigs" '#' yellow
         local zone pid class exe pkg verify why
         local -a asroot=(sudo) pids exes pkgs
         local -A owner
