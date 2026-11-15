@@ -1,4 +1,4 @@
-# 20261113 Kirby
+# 20261115 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -931,23 +931,37 @@ print(json.dumps(IPWhois(argv[1]).lookup_rdap()))
 function patchgem()
 {
     mkbanner "patchgem" '#' yellow
+    local gemdir ruby
     if ! command -v gem >/dev/null 2>&1
     then
         echo "FAIL: no gem installed"
         return 1
     fi
-    if brew --prefix ruby >/dev/null 2>&1 \
-    && [[ -d "$(brew --prefix ruby)" ]]
+    # Only gems in a non-system location: a Ruby under $HOME (rbenv, rvm,
+    # chruby, asdf) or GEM_HOME set to one. A system, Homebrew or pkgsrc
+    # Ruby's gems belong to its package manager.
+    gemdir="$(gem env gemdir 2>/dev/null)"
+    if [[ "$gemdir" != "$HOME"/* ]]
     then
-        echo "chmod'ing u+w ruby dir"
-        chmod -R u+w "$(brew --prefix ruby)" /opt/homebrew/Cellar/ruby
+        echo "SKIPPING: gem ($(command -v gem)) would install into ${gemdir:-its system gem dir}"
+        echo "          Use a Ruby under \$HOME (rbenv, rvm, chruby), or set GEM_HOME to a folder there"
+        return 0
     fi
+    echo "Installing into $gemdir"
 
-    gem update --system
+    # RubyGems itself lives with Ruby, so only when that's under $HOME too
+    ruby="$(gem env 2>/dev/null | sed -n 's/^ *- RUBY EXECUTABLE: //p')"
+    if [[ "$ruby" == "$HOME"/* ]]
+    then
+        gem update --system
+    else
+        echo "Not updating RubyGems itself: it belongs to ${ruby:-the system Ruby}"
+    fi
     gem update
     # gem update never removes old versions, and once several versions satisfy
-    # one dependency gem warns "Unresolved or ambiguous specs"
-    gem cleanup
+    # one dependency gem warns "Unresolved or ambiguous specs". GEM_PATH keeps
+    # cleanup to $gemdir, away from the Ruby's own gems.
+    GEM_PATH="$gemdir" gem cleanup
     mkbanner "gem outdated report" '.' yellow
     gem outdated
     mkbanner '' '.' yellow
@@ -968,14 +982,24 @@ function patchmods()
 ##################################################
 # Usage: patchpip [python]   (default python3, or the active venv's)
 # "python -m pip" so a non-Python "pip" earlier in PATH (pkgsrc's Perl one) isn't used
+# Only a virtual environment, or a Python of your own under $HOME (pyenv, uv,
+# conda): a system, Homebrew or pkgsrc Python's packages belong to its package
+# manager, and pip would replace them behind its back. Others are skipped.
 function patchpip()
 {
     mkbanner "patchpip" '#' yellow
-    local py="${1:-python3}" pkg
+    local py="${1:-python3}" pkg where
     if ! "$py" -m pip --version >/dev/null 2>&1
     then
         echo "FAIL: no pip for $py ($(command -v "$py"))"
         return 1
+    fi
+    where="$("$py" -c 'import sys, sysconfig; print("venv" if sys.prefix != sys.base_prefix else sysconfig.get_paths()["purelib"])' 2>/dev/null)"
+    if [[ "$where" != venv && "$where" != "$HOME"/* ]]
+    then
+        echo "SKIPPING: $py ($(command -v "$py")) isn't a virtual environment; pip would install into ${where:-its system site-packages}"
+        echo "          Activate a venv first, or: patchpip /path/to/venv/bin/python"
+        return 0
     fi
     echo "Using $("$py" -m pip --version)"
     "$py" -m pip install --upgrade pip
@@ -997,7 +1021,9 @@ function patchpip()
 }
 
 ##################################################
-# Python CLI tools installed with pipx or "uv tool", each in its own venv
+# Python CLI tools installed with pipx or "uv tool", each in its own venv.
+# Every one is a virtual environment, so unlike patchpip there's nothing of
+# the system's to skip: upgrade-all doesn't touch pipx --global's /opt/pipx.
 function patchpipx()
 {
     mkbanner "patchpipx" '#' yellow
@@ -1050,8 +1076,10 @@ function cpanhbinstall()
 # Upgrade all outdated CPAN modules.
 #   Mac:            Homebrew perl
 #   Linux, Cygwin:  system perl (/usr/bin/perl)
-#   root (Cygwin: Administrators group) installs into perl's site dirs,
-#   everyone else installs into ~/perl5 (local::lib layout).
+#   Installs into ~/perl5 (local::lib layout), never into a system location:
+#   root, which would install into perl's own site dirs (the OS's or
+#   Homebrew's), is skipped unless that perl is under root's $HOME (perlbrew,
+#   plenv).
 function patchcpan()
 {
     mkbanner "patchcpan" '#' yellow
@@ -1084,6 +1112,19 @@ function patchcpan()
             ;;
     esac
     pbin="$(dirname "$perl")"
+
+    if [[ "$is_root" == 1 ]]
+    then
+        local sitelib
+        # shellcheck disable=SC2016 # $Config is perl, not shell
+        sitelib="$("$perl" -MConfig -e 'print $Config{installsitelib}')"
+        if [[ "$sitelib" != "$HOME"/* ]]
+        then
+            echo "SKIPPING: as root, cpan would install into ${sitelib:-the site dirs of $perl}, a system location"
+            echo "          Run patchcpan as yourself to upgrade ~/perl5"
+            return 0
+        fi
+    fi
 
     if [[ ! -x "$pbin/cpan" ]]
     then
@@ -1203,11 +1244,23 @@ function patchcpan()
 function patchnpm()
 {
     mkbanner "patchnpm" '#' yellow
+    local prefix
     if ! command -v npm >/dev/null 2>&1
     then
         echo "FAIL: npm not found"
         return 1
     fi
+    # Only a non-system global prefix: a Node under $HOME (nvm, fnm) or a
+    # prefix set to one. A system or Homebrew Node's -g folder, and its npm,
+    # belong to its package manager.
+    prefix="$(npm prefix -g 2>/dev/null)"
+    if [[ "$prefix" != "$HOME"/* ]]
+    then
+        echo "SKIPPING: npm ($(command -v npm)) would install into ${prefix:-its system prefix}"
+        echo "          Use a Node under \$HOME (nvm, fnm), or: npm config set prefix ~/.npm-global"
+        return 0
+    fi
+    echo "Installing into $prefix"
     npm install -g npm@latest
     npm outdated -g
     npm update -g
@@ -1222,13 +1275,25 @@ function patchnpm()
 function patchcargo()
 {
     mkbanner "patchcargo" '#' yellow
-    local crate
+    local crate root rustuphome
     if ! command -v cargo >/dev/null 2>&1
     then
         echo "FAIL: cargo not found"
         return 1
     fi
-    if command -v rustup >/dev/null 2>&1
+    # Only a non-system install root. cargo install uses ~/.cargo even with
+    # a system or Homebrew cargo, so this normally runs; it skips when
+    # CARGO_INSTALL_ROOT or CARGO_HOME points outside $HOME. (An install.root
+    # in .cargo/config.toml isn't checked.)
+    root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
+    if [[ "$root" != "$HOME"/* ]]
+    then
+        echo "SKIPPING: cargo install would install into $root"
+        return 0
+    fi
+    echo "Installing into $root"
+    rustuphome="${RUSTUP_HOME:-$HOME/.rustup}"
+    if command -v rustup >/dev/null 2>&1 && [[ "$rustuphome" == "$HOME"/* ]]
     then
         rustup self update
         rustup update
