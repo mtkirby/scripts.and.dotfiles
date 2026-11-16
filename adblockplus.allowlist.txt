@@ -56,6 +56,7 @@
 @@||clerk.com^$document
 @@||cloud.microsoft^$document
 @@||cloudflare.com^$document
+@@||coinbase.com^$document
 @@||connexusenergy.com^$document
 @@||creditkarma.com^$document
 @@||cvs.com^$document
@@ -71,6 +72,7 @@
 @@||empower.com^$document
 @@||epichosted.com^$document
 @@||equifax.com^$document
+@@||etrade.com^$document
 @@||experian.com^$document
 @@||express-scripts.com^$document
 @@||fairview.org^$document
@@ -84,7 +86,9 @@
 @@||gov^$document
 @@||grok.com^$document
 @@||hcaptcha.com^$document
+@@||healthequity.com^$document
 @@||healthpartners.com^$document
+@@||homedepot.com^$document
 @@||hrblock.com^$document
 @@||icloud.com^$document
 @@||id.me^$document
@@ -96,11 +100,15 @@
 @@||labcorp.com^$document
 @@||live.com^$document
 @@||login.gov^$document
+@@||lowes.com^$document
 @@||marcus.com^$document
 @@||mayoclinic.org^$document
 @@||mediacombb.net^$document
 @@||mediacomcable.com^$document
 @@||medica.com^$document
+@@||mercermarketplace365plus.com^$document
+@@||mercer.com^$document
+@@||empower-retirement.com^$document
 @@||metlife.com^$document
 @@||metrotransit.org^$document
 @@||mhealthfairview.org^$document
@@ -109,6 +117,7 @@
 @@||microsoft365.com^$document
 @@||microsoftonline.com^$document
 @@||mk.lan^$document
+@@||mknop.com^$document
 @@||mn.us^$document
 @@||mnsure.org^$document
 @@||mozilla.com^$document
@@ -118,6 +127,7 @@
 @@||mychart.com^$document
 @@||mychartweb.com^$document
 @@||mysubaru.com^$document
+@@||netflix.com^$document
 @@||netverify.com^$document
 @@||office.com^$document
 @@||okta.com^$document
@@ -127,6 +137,7 @@
 @@||optum.com^$document
 @@||optumrx.com^$document
 @@||outlook.com^$document
+@@||pandora.com^$document
 @@||parknicollet.com^$document
 @@||paypal.com^$document
 @@||paypalobjects.com^$document
@@ -142,11 +153,14 @@
 @@||sharepoint.com^$document
 @@||shop.app^$document
 @@||shopify.com^$document
+@@||siriusxm.com^$document
 @@||skillbuilder.com^$document
 @@||smartthings.com^$document
 @@||socure.com^$document
 @@||sofi.com^$document
+@@||spotify.com^$document
 @@||squareup.com^$document
+@@||statefarm.com^$document
 @@||stripe.com^$document
 @@||stytch.com^$document
 @@||synchrony.com^$document
