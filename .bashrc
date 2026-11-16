@@ -1,4 +1,4 @@
-# 20261115 Kirby
+# 20261116 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -3433,8 +3433,6 @@ then
             return 1
         fi
         local cygwinlog="/var/log/setup.log.full"
-        # First: if Cygwin setup closes this terminal, run mywinpatchall again
-        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         patchmssigs 2>&1 |tee /tmp/patchmssigs.log
         patchchoco 2>&1 |tee /tmp/patchchoco.log
         patchwinvs 2>&1 |tee /tmp/patchwinvs.log
@@ -3449,14 +3447,19 @@ then
         winhealthcheck 2>&1 |tee /tmp/winhealthcheck.log
         windiskcheck 2>&1 |tee /tmp/windiskcheck.log
         windiskdefrag 2>&1 |tee /tmp/windiskdefrag.log
+        mywinprocsigs 2>&1 |tee /tmp/mywinprocsigs.log
+        winstartupcheck 2>&1 |tee /tmp/winstartupcheck.log
+        winmodcheck 2>&1 |tee /tmp/winmodcheck.log
+        # Last: replacing a DLL this shell has loaded (cygwin1.dll, cygintl-8.dll,
+        # cygreadline7.dll, ...) makes setup kill this terminal, and anything
+        # still to run here would be skipped. Setup carries on and finishes;
+        # its log is $cygwinlog.
+        patchcygwin 2>&1 |tee /tmp/patchcygwin.log
         if find "$cygwinlog" -mmin -7200 >/dev/null 2>&1
         then
             mkbanner "Cygwin $cygwinlog" '#' yellow
             cat "$cygwinlog"
         fi
-        mywinprocsigs 2>&1 |tee /tmp/mywinprocsigs.log
-        winstartupcheck 2>&1 |tee /tmp/winstartupcheck.log
-        winmodcheck 2>&1 |tee /tmp/winmodcheck.log
     }
 
     ##
@@ -3476,9 +3479,11 @@ then
     ##
     # In quiet mode, setup kills every process that has a file it's replacing loaded,
     # ending with TerminateProcess(-1), which the terminal shows as exit code
-    # 4294967295. cygwin1.dll is loaded in every Cygwin process, this shell included,
-    # so an update to it closes this terminal. Run it again afterwards: with nothing
-    # left to update, setup leaves the shell alone and the rest carries on.
+    # 4294967295. cygwin1.dll is loaded in every Cygwin process, and bash also loads
+    # cygintl-8.dll, cygreadline7.dll, cygiconv-2.dll and cygncursesw-10.dll, so an
+    # update to any of them closes this terminal. That's why mywinpatchall runs this
+    # last. Setup is a Windows program, so it isn't killed with the shell and
+    # finishes the update; /var/log/setup.log.full has what it did.
     # --delete-orphans uninstalls packages Cygwin no longer ships (e.g. python36),
     # since setup otherwise keeps them forever without updates.
     function patchcygwin()
