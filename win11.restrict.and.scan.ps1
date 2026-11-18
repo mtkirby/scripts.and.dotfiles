@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    VERSION 2026-11-14
+    VERSION 2026-11-18
 
     Keeps a Windows 11 PC used by non-technical person who is a target of scams
     and malware. Task Scheduler runs it every day at 20:00 (full virus scans
@@ -102,9 +102,9 @@
        - lnkprotect:      shortcut extensions shown, mshta/regsvr32/certutil
                           firewalled. Double-click opens these file types in
                           Notepad instead of running them: hta, bat, cmd, reg,
-                          scr, js, vbs, wsf, jse, vbe, wsh, application and
-                          appref-ms; and no longer mounts disk images (iso,
-                          img, vhd, vhdx)
+                          scr, pif, ps1, com, chm, rdp, jar, js, vbs, wsf,
+                          jse, vbe, wsh, application and appref-ms; and no
+                          longer mounts disk images (iso, img, vhd, vhdx)
        - explorerview:    File Explorer shows extensions, hidden files (not
                           protected operating system files) and the full path
                           in the title bar; End task on the taskbar's
@@ -2961,6 +2961,22 @@ function Set-ShortcutProtection {
     #                merge one: reg import "<file>" as administrator.
     #   .scr         screen savers, which are programs. Screen saver settings
     #                still work; double-clicking shows the file as text.
+    #   .pif         DOS program shortcuts, which can hold a program of their
+    #                own. Nothing current uses them.
+    #   .ps1         PowerShell scripts. Windows already opens them in Notepad;
+    #                setting it here keeps it that way and reports a user's
+    #                own choice of program for them. To run one: right-click >
+    #                Run with PowerShell, or powershell -File <path>.
+    #   .com         DOS-style programs, used to disguise malware
+    #                ("photo.com"). Windows' own (tree.com etc.) still run
+    #                from a Command Prompt.
+    #   .chm         compiled Help files, which run scripts when opened. A
+    #                program's Help menu opens its own help another way.
+    #   .rdp         Remote Desktop files: an emailed one connects to the
+    #                sender's PC, sharing this PC's drives. To connect with
+    #                one: right-click > Connect.
+    #   .jar         Java programs, behind many remote access trojans; only
+    #                if Java is installed. To run one: java -jar <path>.
     #   .js .vbs .wsf .jse .vbe .wsh  Windows Script Host scripts (also
     #                turned off in Section 6). .jse and .vbe are encoded, so
     #                Notepad shows them scrambled; .wsh is a script's settings.
@@ -2978,6 +2994,12 @@ function Set-ShortcutProtection {
         '.cmd'         = 'cmdfile'
         '.reg'         = 'regfile'
         '.scr'         = 'scrfile'
+        '.pif'         = 'piffile'
+        '.ps1'         = 'Microsoft.PowerShellScript.1'
+        '.com'         = 'comfile'
+        '.chm'         = 'chm.file'
+        '.rdp'         = 'RDP.File'
+        '.jar'         = 'jarfile'
         '.js'          = 'JSFile'
         '.vbs'         = 'VBSFile'
         '.wsf'         = 'WSFFile'
@@ -3007,6 +3029,14 @@ function Set-ShortcutProtection {
             # A COM handler here would be used instead of the command line
             Remove-TrackedValue -Path $cmdKey -Name 'DelegateExecute'
             $changed.Add($ext)
+            # Double-click uses the type's default action, which is "open"
+            # unless another is named here (.rdp's is "Connect"). That
+            # action stays on the right-click menu.
+            $shellKey = "HKLM:\SOFTWARE\Classes\$progId\shell"
+            $verb = Get-RegistryValueState -Path $shellKey -Name '(default)'
+            if ($verb -and "$($verb.Data)" -and "$($verb.Data)" -ne 'open') {
+                Set-TrackedValue -Path $shellKey -Name '(default)' -Value 'open' -Type String
+            }
         } catch {
             Write-Fail "[Explorer] Couldn't make $ext open in Notepad: $($_.Exception.Message)"
         }
