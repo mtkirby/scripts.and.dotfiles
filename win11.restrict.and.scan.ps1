@@ -47,7 +47,8 @@
                           list), and Chrome Remote Desktop blocked. Against scam pages:
                           the remote access programs' sites blocked (see
                           remotetools),
-                          notifications and pop-ups blocked for every site,
+                          notifications blocked for every site, pop-ups
+                          for every site but $PopupsAllowedSites (Outlook.com),
                           malicious downloads blocked, PDFs kept in
                           Chrome's own viewer (not Acrobat), search
                           locked to Google and startup to a New Tab (obeyed
@@ -381,6 +382,25 @@ $JsOptimizerAllowedSites = @(
     'https://[*.]cloud.microsoft'    # Microsoft 365 apps' newer address
     'https://[*.]live.com'           # Outlook.com mail, personal OneDrive
     'https://[*.]yahoo.com'          # Yahoo: mail, finance, news
+    'https://[*.]wellsfargo.com'     # Wells Fargo online banking
+    'https://[*.]vanguard.com'       # Vanguard investments
+)
+
+# ---------------------------------------------------------------
+# Sites allowed to open pop-ups in Chrome and Edge (see Section 1)
+# Every other site's pop-ups are blocked. A window opened straight from a
+# click works anywhere; these sites may also open one by themselves, as
+# Outlook.com does a moment after a click (sending, attachments, a mail
+# opened in its own window). Same format as the list above. Empty for none.
+# ---------------------------------------------------------------
+$PopupsAllowedSites = @(
+    'https://[*.]google.com'         # Google: Search, Gmail, Docs, Maps, Drive
+    'https://[*.]microsoft.com'      # Microsoft: main site, account, Learn
+    'https://[*.]microsoft365.com'   # Microsoft 365 / Office web apps
+    'https://[*.]office.com'         # Microsoft 365 / Office web apps (older address)
+    'https://[*.]cloud.microsoft'    # Microsoft 365 apps' newer address
+    'https://[*.]live.com'           # Outlook.com mail (outlook.live.com)
+    'https://[*.]outlook.com'        # Outlook.com's other address
     'https://[*.]wellsfargo.com'     # Wells Fargo online banking
     'https://[*.]vanguard.com'       # Vanguard investments
 )
@@ -1524,8 +1544,10 @@ function Set-ChromeHardening {
     # Chrome's default, made mandatory so it can't be switched off or allowed
     # for a scam site. Values: 1 = allow, 2 = block. Links that open a new
     # window still work when clicked; only windows a page opens by itself are
-    # blocked, with an icon in the address bar.
+    # blocked, with an icon in the address bar. $PopupsAllowedSites (at the
+    # top) may open them.
     Set-ChromePolicy -Name 'DefaultPopupsSetting' -Value 2 -Description 'Block pop-ups'
+    Set-ChromePolicyList -Name 'PopupsAllowedForUrls' -Values $PopupsAllowedSites -Description 'Sites allowed to open pop-ups'
 
     # 3.2.1 Enable Google Cast - Disabled
     # Disables Cast entirely (reduces attack surface and data exposure).
@@ -1639,6 +1661,7 @@ function Set-EdgeHardening {
     # Edge 100 or later)
     & $set 'DefaultNotificationsSetting' 2 'No site may show notifications'
     & $set 'DefaultPopupsSetting' 2 'Block pop-ups'
+    Set-ChromePolicyList -Browser Edge -Name 'PopupsAllowedForUrls' -Values $PopupsAllowedSites -Description 'Sites allowed to open pop-ups'
     & $set 'DownloadRestrictions' 4 'Block malicious downloads'
     & $set 'AlwaysOpenPdfExternally' 0 "Open PDFs in Edge's own viewer"
     # Relaunch after an update, as Chrome ($BrowserRelaunchNotification at the top)
