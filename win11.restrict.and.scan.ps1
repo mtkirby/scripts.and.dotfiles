@@ -48,7 +48,7 @@
                           the remote access programs' sites blocked (see
                           remotetools),
                           notifications and pop-ups blocked for every site,
-                          potentially dangerous downloads blocked, PDFs kept in
+                          malicious downloads blocked, PDFs kept in
                           Chrome's own viewer (not Acrobat), search
                           locked to Google and startup to a New Tab (obeyed
                           only on a managed PC). An installed extension
@@ -1400,17 +1400,18 @@ function Set-ChromeHardening {
     Set-ChromePolicyList -Name 'ExtensionInstallBlocklist' -Values @('*') -Description 'Block every extension not on the allowlist'
     Set-AdblockPlusPolicy -Browser Chrome
 
-    # 2.11 Allow download restrictions - Block potentially dangerous downloads
+    # 2.11 Allow download restrictions - Block malicious downloads
     # Values: 0 = no restrictions, 1 = block dangerous files, 2 = block potentially
     # dangerous files, 3 = block all downloads, 4 = block malicious downloads.
-    # CIS accepts 4, which only blocks files Safe Browsing knows are malware, so
-    # a brand-new scam installer still downloads. 2 also blocks files of
-    # dangerous types (programs .exe/.msi, scripts .js/.bat, disk images .iso)
-    # that aren't widely known to be safe, which is what a scam has the user
-    # download. Common installers from big vendors still download. To get a
-    # program Chrome blocks: download it in another browser, or set this to 4
-    # for a moment. Depends on Safe Browsing (1.2.2) being on.
-    Set-ChromePolicy -Name 'DownloadRestrictions' -Value 2 -Description 'Block potentially dangerous downloads'
+    # 4 (CIS accepts it) blocks only files Safe Browsing knows are malware, with
+    # no way to keep them. Everything else downloads, so a brand-new scam
+    # installer still downloads; SmartScreen (Section 10b) still stops an
+    # unrecognised program from running. 2 also blocked files of dangerous
+    # types (programs .exe/.msi, scripts .js/.bat, disk images .iso) that
+    # aren't widely known to be safe, but blocked legitimate uncommon
+    # programs too, with no way past it, even through "Save link as".
+    # Depends on Safe Browsing (1.2.2) being on.
+    Set-ChromePolicy -Name 'DownloadRestrictions' -Value 4 -Description 'Block malicious downloads'
 
     # Extra (not CIS): PDFs open in Chrome's own viewer
     # Chrome's PDF viewer runs in Chrome's sandbox and is patched with Chrome
@@ -1634,10 +1635,11 @@ function Set-EdgeHardening {
     # and memory; the policy keeps it on everywhere.
     & $set 'ScarewareBlockerProtectionEnabled' 1 'Scareware blocker on'
     # The same as Chrome (Section 1): no site may show notifications or
-    # pop-ups, and downloads of potentially dangerous file types are blocked
+    # pop-ups, and downloads SmartScreen knows are malware are blocked (4 needs
+    # Edge 100 or later)
     & $set 'DefaultNotificationsSetting' 2 'No site may show notifications'
     & $set 'DefaultPopupsSetting' 2 'Block pop-ups'
-    & $set 'DownloadRestrictions' 2 'Block potentially dangerous downloads'
+    & $set 'DownloadRestrictions' 4 'Block malicious downloads'
     & $set 'AlwaysOpenPdfExternally' 0 "Open PDFs in Edge's own viewer"
     # Relaunch after an update, as Chrome ($BrowserRelaunchNotification at the top)
     & $set 'RelaunchNotification' $BrowserRelaunchNotification 'Prompt to relaunch after an update (1 = ask, 2 = ask, then relaunch)'
