@@ -7,8 +7,8 @@
     on Fridays, quick ones otherwise), and the Start menu entry "My OS
     Refresher" runs it any time. Each run:
     - Locks down Chrome and Edge: CIS policies, an extension allowlist, no
-      site notifications or pop-ups (the "your PC is infected, call this
-      number" lure), risky downloads blocked, remote access sites blocked.
+      site notifications (the "your PC is infected, call this number"
+      lure), risky downloads blocked, remote access sites blocked.
     - Locks down Windows and Office: CIS settings, 16 Defender attack surface
       reduction rules, Controlled folder access, SmartScreen, memory
       integrity and LSA protection, firewall, UAC, DNS over HTTPS, and risky
@@ -48,7 +48,8 @@
                           the remote access programs' sites blocked (see
                           remotetools),
                           notifications blocked for every site, pop-ups
-                          for every site but $PopupsAllowedSites (Outlook.com),
+                          allowed for $PopupsAllowedSites (Outlook.com) and
+                          otherwise blocked unless the person allows a site,
                           malicious downloads blocked, PDFs kept in
                           Chrome's own viewer (not Acrobat), search
                           locked to Google and startup to a New Tab (obeyed
@@ -388,8 +389,9 @@ $JsOptimizerAllowedSites = @(
 
 # ---------------------------------------------------------------
 # Sites allowed to open pop-ups in Chrome and Edge (see Section 1)
-# Every other site's pop-ups are blocked. A window opened straight from a
-# click works anywhere; these sites may also open one by themselves, as
+# Other sites' pop-ups are blocked, unless the person allows that site (the
+# icon in the address bar). A window opened straight from a click works
+# anywhere; these sites may also open one by themselves, as
 # Outlook.com does a moment after a click (sending, attachments, a mail
 # opened in its own window). Same format as the list above. Empty for none.
 # ---------------------------------------------------------------
@@ -1540,13 +1542,16 @@ function Set-ChromeHardening {
     # their pop-up alerts; their apps still have them.
     Set-ChromePolicy -Name 'DefaultNotificationsSetting' -Value 2 -Description 'No site may show notifications'
 
-    # Extra (not CIS): Pop-ups - Blocked
-    # Chrome's default, made mandatory so it can't be switched off or allowed
-    # for a scam site. Values: 1 = allow, 2 = block. Links that open a new
-    # window still work when clicked; only windows a page opens by itself are
-    # blocked, with an icon in the address bar. $PopupsAllowedSites (at the
-    # top) may open them.
-    Set-ChromePolicy -Name 'DefaultPopupsSetting' -Value 2 -Description 'Block pop-ups'
+    # Extra (not CIS): Pop-ups - Blocked, the person may allow a site
+    # Chrome blocks pop-ups by default. Links that open a new window still
+    # work when clicked; only windows a page opens by itself are blocked, with
+    # an icon in the address bar, where the person can allow that site. The
+    # DefaultPopupsSetting policy (1 = allow, 2 = block) would lock that
+    # setting, and Chrome has no recommended (changeable) form of it, so it
+    # isn't set; one set by an earlier run is removed. $PopupsAllowedSites
+    # (at the top) are allowed without asking.
+    Remove-TrackedValue -Path 'HKLM:\SOFTWARE\Policies\Google\Chrome' -Name 'DefaultPopupsSetting'
+    Write-Host "  [Chrome] DefaultPopupsSetting not set  # pop-ups blocked by default; the person may allow a site" -ForegroundColor Green
     Set-ChromePolicyList -Name 'PopupsAllowedForUrls' -Values $PopupsAllowedSites -Description 'Sites allowed to open pop-ups'
 
     # 3.2.1 Enable Google Cast - Disabled
@@ -1656,11 +1661,13 @@ function Set-EdgeHardening {
     # warning instead. Edge only turns it on by itself on PCs with enough CPU
     # and memory; the policy keeps it on everywhere.
     & $set 'ScarewareBlockerProtectionEnabled' 1 'Scareware blocker on'
-    # The same as Chrome (Section 1): no site may show notifications or
-    # pop-ups, and downloads SmartScreen knows are malware are blocked (4 needs
-    # Edge 100 or later)
+    # The same as Chrome (Section 1): no site may show notifications, and
+    # downloads SmartScreen knows are malware are blocked (4 needs
+    # Edge 100 or later). Pop-ups are blocked by Edge's default, which the
+    # person may change for a site; DefaultPopupsSetting would lock it.
     & $set 'DefaultNotificationsSetting' 2 'No site may show notifications'
-    & $set 'DefaultPopupsSetting' 2 'Block pop-ups'
+    Remove-TrackedValue -Path $edge -Name 'DefaultPopupsSetting'
+    Write-Host "  [Edge] DefaultPopupsSetting not set  # pop-ups blocked by default; the person may allow a site" -ForegroundColor Green
     Set-ChromePolicyList -Browser Edge -Name 'PopupsAllowedForUrls' -Values $PopupsAllowedSites -Description 'Sites allowed to open pop-ups'
     & $set 'DownloadRestrictions' 4 'Block malicious downloads'
     & $set 'AlwaysOpenPdfExternally' 0 "Open PDFs in Edge's own viewer"
