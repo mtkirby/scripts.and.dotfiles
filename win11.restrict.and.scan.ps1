@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    VERSION 2026-11-18
+    VERSION 2026-11-19
 
     Keeps a Windows 11 PC used by non-technical person who is a target of scams
     and malware. Task Scheduler runs it every day at 20:00 (full virus scans
@@ -104,7 +104,7 @@
        - lnkprotect:      shortcut extensions shown, mshta/regsvr32/certutil
                           firewalled. Double-click opens these file types in
                           Notepad instead of running them: hta, bat, cmd, reg,
-                          scr, pif, ps1, com, chm, rdp, jar, js, vbs, wsf,
+                          scr, pif, ps1, com, rdp, jar, js, vbs, wsf,
                           jse, vbe, wsh, application and appref-ms; and no
                           longer mounts disk images (iso, img, vhd, vhdx)
        - explorerview:    File Explorer shows extensions, hidden files (not
@@ -3000,8 +3000,6 @@ function Set-ShortcutProtection {
     #   .com         DOS-style programs, used to disguise malware
     #                ("photo.com"). Windows' own (tree.com etc.) still run
     #                from a Command Prompt.
-    #   .chm         compiled Help files, which run scripts when opened. A
-    #                program's Help menu opens its own help another way.
     #   .rdp         Remote Desktop files: an emailed one connects to the
     #                sender's PC, sharing this PC's drives. To connect with
     #                one: right-click > Connect.
@@ -3027,7 +3025,6 @@ function Set-ShortcutProtection {
         '.pif'         = 'piffile'
         '.ps1'         = 'Microsoft.PowerShellScript.1'
         '.com'         = 'comfile'
-        '.chm'         = 'chm.file'
         '.rdp'         = 'RDP.File'
         '.jar'         = 'jarfile'
         '.js'          = 'JSFile'
