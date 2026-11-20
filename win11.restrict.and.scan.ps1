@@ -414,7 +414,7 @@ $PopupsAllowedSites = @(
 #   1 = they open read-only in Protected View
 #   2 = they open in Protected View and can be edited
 # ---------------------------------------------------------------
-$OfficeBlockedFileBehavior = 1
+$OfficeBlockedFileBehavior = 2
 
 # ---------------------------------------------------------------
 # Adobe Acrobat and Reader: JavaScript in PDFs (see Section 7b)
@@ -2447,8 +2447,9 @@ function Enable-TaskHistory {
 #     are blocked without a prompt, so there's no "Enable Content" button.
 #   - Add-ins must be signed by a trusted publisher. Unsigned ones are
 #     disabled without a prompt.
-#   - Old binary files (.doc, .xls, .ppt) and older formats are blocked:
-#     see $OfficeBlockedFileBehavior at the top to let them open read-only.
+#   - Old binary files (.doc, .xls, .ppt) and older formats open in
+#     Protected View; "Enable Editing" lets them be edited and saved as
+#     .docx/.xlsx/.pptx (see $OfficeBlockedFileBehavior at the top).
 #   - Other programs can't send mail or read the address book through
 #     Outlook (some scanners and accounting apps do this).
 #   - Junk mail filtering is set to High; check the Junk folder at first.
