@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    VERSION 2026-11-19
+    VERSION 2026-11-20
 
     Keeps a Windows 11 PC used by non-technical person who is a target of scams
     and malware. Task Scheduler runs it every day at 20:00 (full virus scans
@@ -189,8 +189,9 @@
        - windiskcheck:    chkdsk /scan of the system drive, on Fridays and with
                           -FullScan
        - mywinprocsigs:   running programs without a valid Authenticode
-                          signature, and LOLBAS programs renamed or running from
-                          unusual folders
+                          signature (Store apps are checked against their signed
+                          package instead), and LOLBAS programs renamed or
+                          running from unusual folders
        - winstartupcheck: startup entries (tasks, Run keys, services, WMI...) and
                           shortcuts that run LOLBAS programs, alerting on signs of
                           misuse
@@ -5177,16 +5178,93 @@ function Test-SystemDisk {
     }
 }
 
+# Store apps (in a WindowsApps folder) are signed as a whole package, not file
+# by file, so many of their programs have no Authenticode signature of their
+# own. The package signature, which Windows checks when it installs the app,
+# covers AppxBlockMap.xml, and that holds a hash of every 64 KB block of every
+# file in the package. Returns '' when $Path is in a Store- or Windows-signed
+# package that Windows reports as intact and the file matches the block map;
+# otherwise, the reason it doesn't.
+$script:PackagesByName = $null
+function Test-PackagedFile {
+    param([string]$Path)
+    if ($Path -notmatch '^(?<dir>.+\\WindowsApps\\(?<name>[^\\]+))\\(?<rel>.+)$') { return 'not in a Store app folder' }
+    $dir = $Matches.dir
+    $name = $Matches.name
+    $rel = $Matches.rel
+    if ($null -eq $script:PackagesByName) {
+        $script:PackagesByName = @{}
+        try {
+            foreach ($p in @(Get-AppxPackage -AllUsers -ErrorAction Stop)) { $script:PackagesByName["$($p.PackageFullName)"] = $p }
+        } catch {
+            Write-Verbose "no Store app list: $($_.Exception.Message)"
+        }
+    }
+    $pkg = $script:PackagesByName[$name]
+    if (-not $pkg) { return 'not in an installed package' }
+    if ("$($pkg.SignatureKind)" -notin 'Store', 'System') { return "package signed as $($pkg.SignatureKind)" }
+    if ("$($pkg.Status)" -ne 'Ok') { return "package status $($pkg.Status)" }
+
+    try {
+        $map = [xml](Get-Content -LiteralPath (Join-Path $dir 'AppxBlockMap.xml') -Raw -ErrorAction Stop)
+    } catch {
+        return 'no readable AppxBlockMap.xml'
+    }
+    $method = $map.DocumentElement.GetAttribute('HashMethod')
+    $algo = switch -Wildcard ($method) { '*#sha256' { 'SHA256' } '*#sha384' { 'SHA384' } '*#sha512' { 'SHA512' } default { '' } }
+    if (-not $algo) { return "unknown block map hash $method" }
+    $entry = $map.DocumentElement.ChildNodes |
+        Where-Object { $_.LocalName -eq 'File' -and $_.GetAttribute('Name') -eq $rel } | Select-Object -First 1
+    if (-not $entry) { return 'not listed in the package block map' }
+    $blocks = @($entry.ChildNodes | Where-Object { $_.LocalName -eq 'Block' })
+    $size = [long]$entry.GetAttribute('Size')
+    if ($blocks.Count -ne [math]::Ceiling($size / 65536)) { return 'package block map is malformed' }
+
+    $hasher = [Security.Cryptography.HashAlgorithm]::Create($algo)
+    $buf = New-Object byte[] 65536
+    $fs = $null
+    try {
+        $fs = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+        if ($fs.Length -ne $size) { return 'size differs from the package block map' }
+        foreach ($b in $blocks) {
+            $n = 0
+            while ($n -lt $buf.Length) {
+                $r = $fs.Read($buf, $n, $buf.Length - $n)
+                if ($r -le 0) { break }
+                $n += $r
+            }
+            # Base64 is case-sensitive
+            if ([Convert]::ToBase64String($hasher.ComputeHash($buf, 0, $n)) -cne $b.GetAttribute('Hash')) {
+                return 'content differs from the package block map'
+            }
+        }
+    } catch {
+        return "couldn't read it: $($_.Exception.Message)"
+    } finally {
+        if ($fs) { $fs.Dispose() }
+        $hasher.Dispose()
+    }
+    ''
+}
+
 # mywinprocsigs: running programs without a valid Authenticode signature
 function Find-UnsignedProcess {
     Write-Banner 'Processes W/O Valid Authenticode Signature' '.'
     # Listed for review. Many legitimate programs are unsigned, so this is a note
     # in the summary rather than a failure. Renamed or relocated Windows programs
-    # are the failure, in Find-LolbasCopy.
+    # are the failure, in Find-LolbasCopy. Store app programs pass when they
+    # match their signed package (Test-PackagedFile); otherwise the reason is
+    # shown in brackets.
     $unsigned = @(Get-Process | Where-Object Path | ForEach-Object Path | Sort-Object -Unique |
         ForEach-Object {
             $s = Get-AuthenticodeSignature -LiteralPath $_ -ErrorAction SilentlyContinue
-            if ($s -and $s.Status -ne 'Valid') { '{0,-14} {1}' -f $s.Status, $_ }
+            if ($s -and $s.Status -ne 'Valid') {
+                if ($_ -notmatch '\\WindowsApps\\') {
+                    '{0,-14} {1}' -f $s.Status, $_
+                } elseif ($why = Test-PackagedFile $_) {
+                    '{0,-14} {1} ({2})' -f $s.Status, $_, $why
+                }
+            }
         })
     $unsigned
     if ($unsigned.Count) {
