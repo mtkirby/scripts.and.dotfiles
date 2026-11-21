@@ -1,4 +1,4 @@
-# 20261116 Kirby
+# 20261121 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -3795,9 +3795,10 @@ then
         # date +%u: 1 is Monday, 6 Saturday
         if [[ "$(date +%u)" == 6 ]]
         then
-            scan=/full
+            scan=' /f=C: /pup /archive /ntfs '
             mkbanner "a2cmd $scan (Saturday; this can take hours)" '.' yellow
         else
+            scan=' /memory /traces /malware /pup /archive /ntfs '
             mkbanner "a2cmd $scan" '.' yellow
         fi
         "$a2cmd" "$scan" 2>&1 | tr -d '\r' | tee "$log"
