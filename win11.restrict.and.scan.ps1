@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    VERSION 2026-11-20
+    VERSION 2026-11-21
 
     Keeps a Windows 11 PC used by non-technical person who is a target of scams
     and malware. Task Scheduler runs it every day at 20:00 (full virus scans
@@ -2777,7 +2777,7 @@ function Set-OfficeHardening {
     }
     Add-OfficeSetting "$ol\security" 'level' 3                              # Outlook macros: signed only, warn
     Add-OfficeSetting "$ol\security" 'allowactivexoneoffforms' 0            # forms load only Outlook's own controls
-    Add-OfficeSetting "$ol\security" 'enablerememberpwd' 0                  # no saved passwords for POP/IMAP accounts
+    Add-OfficeSetting "$ol\security" 'enablerememberpwd' 1                  # allow saved passwords for POP/IMAP accounts
     Add-OfficeSetting "$ol\security" 'forcedefaultprofile' 0
 
     Invoke-InEachUserHive {
