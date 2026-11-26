@@ -1,4 +1,4 @@
-# 20261121 Kirby
+# 20261126 Kirby
 # shellcheck shell=bash disable=SC1090,SC1091,SC2009
 
 ##################################################
@@ -931,39 +931,86 @@ print(json.dumps(IPWhois(argv[1]).lookup_rdap()))
 function patchgem()
 {
     mkbanner "patchgem" '#' yellow
-    local gemdir ruby
-    if ! command -v gem >/dev/null 2>&1
+    local gem='' brewprefix='' candidate gemdir ruby
+    # Homebrew's Ruby first. It's keg-only, so it's often not in PATH, and
+    # the gem found there would be macOS's own (/usr/bin/gem).
+    for candidate in \
+        ${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/opt/ruby/bin/gem"} \
+        /opt/homebrew/opt/ruby/bin/gem \
+        /usr/local/opt/ruby/bin/gem \
+        /home/linuxbrew/.linuxbrew/opt/ruby/bin/gem \
+        "$HOME/.linuxbrew/opt/ruby/bin/gem"
+    do
+        if [[ -x "$candidate" ]]
+        then
+            gem="$candidate"
+            brewprefix="${candidate%/opt/ruby/bin/gem}"
+            break
+        fi
+    done
+    if [[ -z "$gem" ]]
+    then
+        gem="$(type -P gem)"
+    fi
+    if [[ -z "$gem" ]]
     then
         echo "FAIL: no gem installed"
         return 1
     fi
-    # Only gems in a non-system location: a Ruby under $HOME (rbenv, rvm,
-    # chruby, asdf) or GEM_HOME set to one. A system, Homebrew or pkgsrc
-    # Ruby's gems belong to its package manager.
-    gemdir="$(gem env gemdir 2>/dev/null)"
-    if [[ "$gemdir" != "$HOME"/* ]]
+    echo "Using $gem"
+
+    # Only gems in a non-system location:
+    # - Homebrew's Ruby installs gems in <prefix>/lib/ruby/gems, outside its
+    #   Cellar. Homebrew doesn't manage them, and keeps them when it upgrades Ruby.
+    # - Otherwise, a Ruby under $HOME (rbenv, rvm, chruby, asdf), or GEM_HOME
+    #   set to a folder there. A system or pkgsrc Ruby's gems belong to its
+    #   package manager.
+    gemdir="$("$gem" env gemdir 2>/dev/null)"
+    if [[ -n "$brewprefix" && "$gemdir" == "$brewprefix"/lib/ruby/gems/* ]] \
+    || [[ "$gemdir" == "$HOME"/* ]]
     then
-        echo "SKIPPING: gem ($(command -v gem)) would install into ${gemdir:-its system gem dir}"
-        echo "          Use a Ruby under \$HOME (rbenv, rvm, chruby), or set GEM_HOME to a folder there"
+        echo "Installing into $gemdir"
+    else
+        echo "SKIPPING: $gem would install into ${gemdir:-its system gem dir}"
+        echo "          Use Homebrew's Ruby (brew install ruby) or a Ruby under \$HOME (rbenv, rvm, chruby), or set GEM_HOME to a folder there"
         return 0
     fi
-    echo "Installing into $gemdir"
 
-    # RubyGems itself lives with Ruby, so only when that's under $HOME too
-    ruby="$(gem env 2>/dev/null | sed -n 's/^ *- RUBY EXECUTABLE: //p')"
+    # RubyGems itself lives with Ruby, so only when that's under $HOME too.
+    # Homebrew's comes with its Ruby, and brew upgrade ruby updates it.
+    ruby="$("$gem" env 2>/dev/null | sed -n 's/^ *- RUBY EXECUTABLE: //p')"
     if [[ "$ruby" == "$HOME"/* ]]
     then
-        gem update --system
+        "$gem" update --system
     else
         echo "Not updating RubyGems itself: it belongs to ${ruby:-the system Ruby}"
     fi
-    gem update
+    # Everything outdated except rdoc. Ruby comes with its own rdoc, which
+    # brew upgrade ruby (or a new Ruby) updates. Each rdoc installs a RubyGems
+    # plugin, and with a second copy every gem command loads both and prints
+    # "already initialized constant RDoc::..." warnings.
+    # (read loop, not mapfile: macOS's bash 3.2 has no mapfile)
+    local name
+    local -a outdated=()
+    while read -r name _
+    do
+        if [[ -n "$name" && "$name" != rdoc ]]
+        then
+            outdated+=("$name")
+        fi
+    done < <("$gem" outdated 2>/dev/null)
+    if (( ${#outdated[@]} ))
+    then
+        "$gem" update "${outdated[@]}"
+    else
+        echo "No gems to update"
+    fi
     # gem update never removes old versions, and once several versions satisfy
     # one dependency gem warns "Unresolved or ambiguous specs". GEM_PATH keeps
     # cleanup to $gemdir, away from the Ruby's own gems.
-    GEM_PATH="$gemdir" gem cleanup
+    GEM_PATH="$gemdir" "$gem" cleanup
     mkbanner "gem outdated report" '.' yellow
-    gem outdated
+    "$gem" outdated
     mkbanner '' '.' yellow
 }
 
